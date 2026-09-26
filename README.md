@@ -216,7 +216,7 @@ network listener. Desktop apps are out of scope.
 
 ## License and releases
 
-MIT © 2026 Mike Williams. See [LICENSE](./LICENSE).
+MIT © 2026 BrutalSystems. See [LICENSE](./LICENSE).
 
 Publishing is tag-driven and runs in GitHub Actions over OIDC trusted
 publishing, with no stored npm token anywhere in this repository. A bare
