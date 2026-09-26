@@ -26,7 +26,7 @@ const MAX_LOG_BYTES = 2 * 1024 * 1024;
 
 /** version is kept in step with package.json by scripts/sync-version.mjs, and
  *  a test asserts they agree. */
-const VERSION = '1.0.1';
+const VERSION = '2.0.0';
 
 export const Birddog = async (input?: { client?: { _client?: unknown } }) => {
   const logPath = pluginLogPath(process.env, homedir());
