@@ -111,6 +111,37 @@ would report a stall nobody observed. A status that says the session is working
 is evidence of work. Quiet is for a reachable session whose state says nothing
 useful and where nothing has been seen to happen.
 
+That leaves one gap, and it is covered by a different condition — see below.
+
+## A session is stuck and birddog said nothing
+
+Quiet is suppressed while a provider reports work, for the reason above, so a
+session wedged *while still reporting it is working* is the one state quiet
+never speaks about. `no_progress` is the condition for that case: the same
+activity clock, consulted at a horizon you set.
+
+It is off until you ask for it, and that takes two things in the target's
+policy, not one:
+
+```json
+"policy": {
+  "alert_on": ["exit", "quiet", "no_progress"],
+  "no_progress_after_seconds": 1800
+}
+```
+
+Naming the condition without the threshold leaves it inert, and setting the
+threshold without naming the condition does nothing either.
+
+There is deliberately no default, because the threshold is the whole design and
+what it measures is not the same quantity on every provider — an instrumented
+session restamps at each tool boundary, uninstrumented Claude Code only when
+the state changes. Read
+[Attention conditions](./cli.md#attention-conditions) for what your provider's
+`activity_resolution` makes the number mean before picking one, and
+[D6](./decisions.md#d6--no_progress-ships-with-no-default-because-the-signal-is-not-comparable)
+for why there is none to inherit.
+
 ## A `no_progress` alert arrived and the session looks fine
 
 Read `activity_resolution` in the event's evidence. It says what the activity
