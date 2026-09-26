@@ -50,25 +50,46 @@ func TestAcceptedIsDelivered(t *testing.T) {
 	}
 }
 
-// A message with this key went out — but to whatever session held the peer
-// name at the time, which tincan compares by address string and text, never
-// by the durable id of the session that received it. Inside the ten-minute
-// window a name can move to a new session, and recording `delivered` would
-// claim the session now holding it was told something it never saw.
+// From tincan 2.0.0 this refusal means the peer being addressed really does
+// hold the message: the case where the name moved to another session since
+// the first send has its own refusal, below. So it makes the same claim
+// `accepted` does, and reporting it as uncertain would leave an alert that
+// did arrive looking like one that might not have.
 //
-// Unknown is the value for "the call established nothing", and it stops
-// further attempts, so the event feed carries the recovery.
-func TestDuplicateSendIsUnknownNotDelivered(t *testing.T) {
+// The probe is what makes this safe. Only a tincan that draws the
+// distinction gets past startup.
+func TestDuplicateSendIsDelivered(t *testing.T) {
 	r := &run{stdout: `{"outcome":"rejected","refusal":"duplicate_send","message_id":"msg_1"}`, code: 2}
 	got, err := connector(r).Deliver(alert())
-	if got != notify.Delivered && got != notify.Unknown {
-		t.Fatalf("Outcome = %v", got)
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
 	}
-	if got == notify.Delivered {
-		t.Error("Outcome = Delivered; tincan compares the peer name, not the session that received it, so the current holder may never have seen this")
+	if got != notify.Delivered {
+		t.Errorf("Outcome = %v, want Delivered: duplicate_send now means the peer addressed has the message", got)
 	}
-	if err == nil || !strings.Contains(err.Error(), "duplicate_send") {
-		t.Errorf("err = %v, want it to name duplicate_send", err)
+}
+
+// The retry's target name has since moved to a different session, so the
+// session holding it now never saw this alert. Nothing was established:
+// `delivered` would claim a worker was told something it may never have been
+// told, and `failed` invites a retry that resolves identically. Unknown is
+// the value for a call that settled nothing, and it stops further attempts so
+// the event feed carries the recovery.
+func TestDuplicatePeerMovedIsUnknown(t *testing.T) {
+	r := &run{stdout: `{"outcome":"rejected","refusal":"duplicate_peer_moved","message_id":"msg_1"}`, code: 2}
+	got, err := connector(r).Deliver(alert())
+	if got != notify.Unknown {
+		t.Errorf("Outcome = %v, want Unknown: the name moved, so the session holding it may never have seen this", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "duplicate_peer_moved") {
+		t.Errorf("err = %v, want it to name duplicate_peer_moved", err)
+	}
+	// Unknown is also where an unrecognised refusal lands, so the outcome
+	// alone cannot tell whether this case is handled or merely unhandled.
+	// A build that does not know this refusal says so, and that is the
+	// difference worth pinning.
+	if err != nil && strings.Contains(err.Error(), "unrecognised") {
+		t.Errorf("err = %v, want a refusal this build knows, not the unrecognised-reason fallback", err)
 	}
 }
 

@@ -127,7 +127,7 @@ worker, and are queued for a turn boundary rather than interrupting one.
 | Route | Reaches | Needs |
 |---|---|---|
 | `claude-inbox` | a Claude Code orchestrator | nothing |
-| `tincan` | Claude Code, Codex or opencode | [tincan](https://github.com/BrutalSystems/tincan) 1.10.1+ on `PATH` |
+| `tincan` | Claude Code, Codex or opencode | [tincan](https://github.com/BrutalSystems/tincan) 2.0.0+ on `PATH` |
 | `none` | nothing; poll `events` instead | nothing |
 
 Delivery failure never affects observation. Whatever happens to an alert, the

@@ -7,9 +7,13 @@
 // implementing three wire formats.
 //
 // The cost is a dependency on a binary birddog does not ship and cannot
-// version-pin: tincan is installed separately. So the connector probes for
-// the subcommand when it is built and refuses loudly if it is absent, rather
-// than discovering it at the first alert.
+// version-pin: tincan is installed separately, and can be upgraded or
+// downgraded under a running birddog. So the connector probes when it is
+// built and refuses loudly, rather than discovering it at the first alert.
+//
+// tincan 2.0.0 or newer is required. `send --help` exiting 0 is what the
+// probe reads, and `duplicate_peer_moved` is what lets a duplicate be
+// reported honestly; both arrived in that release.
 package tincan
 
 import (
@@ -39,8 +43,8 @@ const defaultTimeout = 10 * time.Second
 //
 // stderr is returned separately and never merged: the send contract puts the
 // result line on stdout and diagnostics on stderr, so merging them would
-// break the parse. The capability probe needs stderr, because that is where
-// tincan writes its unrecognised-argument text.
+// break the parse. It is still returned because a refusal quotes it — the
+// probe's own answer is its exit code, not anything it writes.
 type Runner func(timeout time.Duration, name string, args ...string) (stdout, stderr []byte, exitCode int, err error)
 
 // Connector delivers one alert per invocation of `tincan send`.
@@ -151,24 +155,30 @@ func outcomeOf(r result, peer string) (notify.Outcome, error) {
 	case "rejected":
 		switch r.Refusal {
 		case "duplicate_send":
-			// A message with this key went out, under the id this names —
-			// but tincan decides "same send" by comparing the peer name as
-			// typed and the message text, never the durable id of the
-			// session that received it. Inside its ten-minute window a name
-			// can move to a new session, and then the session now holding it
-			// never saw this alert.
+			// This alert already went out under the id this names, and from
+			// tincan 2.0.0 it means the peer being addressed really does have
+			// it: a retry whose name has since moved to a different session
+			// is refused as duplicate_peer_moved instead.
 			//
-			// So this is not Delivered: birddog would be recording that a
-			// worker was told something it may never have been told, which
-			// is the one claim this program exists not to make. Nor is it
-			// Failed — something was sent, and Failed invites a retry that
-			// would resolve identically. Unknown is the value for a call
-			// that established nothing, and it stops further attempts, so
-			// the event feed carries the recovery.
+			// So it makes exactly the claim `accepted` makes, and is reported
+			// the same way. Until that split existed this had to be Unknown,
+			// because the two were indistinguishable and recording
+			// `delivered` would have claimed a worker was told something it
+			// may never have been told. The startup probe is what keeps that
+			// true: a tincan that cannot draw the distinction never gets past
+			// it.
+			return notify.Delivered, nil
+
+		case "duplicate_peer_moved":
+			// Same key, but the name it was sent to now belongs to a
+			// different session, so the session holding it never saw this
+			// alert. Nothing was established. Not Delivered, for the reason
+			// above; not Failed either, since something was sent and Failed
+			// invites a retry that resolves identically. Unknown stops
+			// further attempts and leaves the recovery to the event feed.
 			return notify.Unknown, fmt.Errorf(
-				"duplicate_send: tincan reports this alert already sent as %s, matching on the "+
-					"name %q and the message text rather than on the session that received it — "+
-					"so whichever session holds that name now may not have it",
+				"duplicate_peer_moved: this alert was already sent as %s, but the name %q has since "+
+					"moved to a different session — so whichever session holds it now has not seen this",
 				r.MessageID, peer)
 
 		case "key_reused":

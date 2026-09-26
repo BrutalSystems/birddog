@@ -410,19 +410,28 @@ formats to alert three kinds of orchestrator.
 `peer` is the orchestrator's name as tincan lists it. `binary` optionally names
 the executable; otherwise `tincan` is resolved on PATH.
 
-**It probes at startup and refuses a tincan that cannot serve it.** tincan is
-installed separately and birddog cannot version-pin it — 1.9.2 has no `send`
-subcommand at all. An operator who configured this route is entitled to be
-told at startup that it cannot work, rather than discovering it when the first
-worker blocks. Measured against both real binaries:
+**It requires tincan 2.0.0 or newer, and probes at startup.** tincan is
+installed separately and birddog cannot version-pin it — it can be upgraded or
+downgraded under a running birddog, so the check is a runtime one. An operator
+who configured this route is entitled to be told at startup that it cannot
+work, rather than discovering it when the first worker blocks.
 
-| Installed tincan | `tincan send` with no args | birddog |
+| Installed tincan | `tincan send --help` | birddog |
 |---|---|---|
-| no subcommand (1.9.2) | exit 2, `tincan: unrecognised argument 'send'` | refuses to start, naming the upgrade |
-| with the subcommand | exit 64, `tincan send: --to is required.` | starts |
+| 2.0.0 or newer | exit 0 | starts |
+| every older build | non-zero | refuses to start, naming the upgrade |
 
-Both write to stderr, and neither writes to stdout, which is why the probe
-reads stderr.
+tincan documents that exit code as its capability check, which is why the
+probe reads nothing else. It used to match the string `unrecognised argument`
+on stderr, because 1.9.2 and 1.10.1 both exited non-zero from a bare `send`
+and only the wording told them apart — and that wording was tincan's usage
+prose, so a reword would have silently turned the probe into one that accepts
+a tincan that cannot deliver.
+
+Refusing 1.10.1 is deliberate, and not only about the probe. It has `send` and
+delivers, but predates `duplicate_peer_moved`; the outcome table below reports
+`duplicate_send` as `delivered`, which is only true where that other refusal
+exists to carry the case the name moved.
 
 **What each answer is taken to mean.** tincan's `accepted` and birddog's
 `delivered` make the same claim — the destination accepted it — and neither
@@ -431,7 +440,8 @@ means the session read it. Nothing here upgrades that.
 | tincan says | birddog records | why |
 |---|---|---|
 | `accepted` | `delivered` | the harness transport took it |
-| `rejected` / `duplicate_send` | `delivery_unknown` | a message with this key went out, but tincan matches on the peer *name* and the text, never on the session that received it — see below |
+| `rejected` / `duplicate_send` | `delivered` | this alert already went out, and the peer being addressed has it — see below |
+| `rejected` / `duplicate_peer_moved` | `delivery_unknown` | it went out, but the name has since moved to a different session, which never saw it — see below |
 | `rejected` / `key_reused` | `failed` | birddog's own key collided and nothing was sent — a birddog bug, reported rather than hidden |
 | `rejected` / `peer_unknown`, `peer_ambiguous`, `peer_unreachable`, `peer_changed`, `self_send` | `no_recipient` | resolves identically next time, so retrying spends the budget on a configuration error |
 | `failed` | `failed` | attempted, the transport did not take it |
@@ -439,24 +449,29 @@ means the session read it. Nothing here upgrades that.
 | no result line, or a refusal this build does not know | `delivery_unknown` | nothing was established, and guessing would claim otherwise |
 | timed out | `delivery_unknown` | a connector that can hang stalls the observation pass behind it, so the send is bounded and the answer is honest |
 
-**Why `duplicate_send` is not `delivered`.** tincan decides "same send" by
-comparing the peer name as typed and the message text. It does not compare the
-durable id of the session that actually received it. Within its ten-minute
-idempotency window a peer name can move to a new session — session display
-names on this machine demonstrably move within a day under fixed ids — and
-then the session now holding that name never saw the alert.
+**Why the two duplicates are recorded differently.** tincan decides "same
+send" by comparing the peer name as typed and the message text, not the
+durable id of the session that received it. Within its ten-minute idempotency
+window a peer name can move to a new session — session display names on this
+machine demonstrably move within a day under fixed ids — and then the session
+now holding that name never saw the alert.
 
-Recording `delivered` there would tell an orchestrator a worker had been
-notified of something it may never have been told, which is the one claim
-birddog exists not to make. `failed` would be wrong too: something *was* sent,
-and `failed` invites a retry that resolves identically. `delivery_unknown` is
-the value for a call that established nothing, and it stops further attempts,
-so the event feed carries the recovery.
+From 2.0.0 tincan separates those cases itself. `duplicate_send` means the
+peer being addressed really does have the message, which is the same claim
+`accepted` makes, so birddog records `delivered` and the ordinary retry path
+is restored. `duplicate_peer_moved` is the one where the name moved, and there
+nothing was established: `delivered` would tell an orchestrator a worker had
+been notified of something it may never have been told, which is the one claim
+birddog exists not to make, and `failed` would invite a retry that resolves
+identically. `delivery_unknown` stops further attempts and leaves the recovery
+to the event feed.
 
-In practice birddog reaches this rarely: it retries only after a `failed`
-attempt, and tincan does not burn a key on a send that never landed. Rarely is
-not never, and the cost of being wrong is a false negative on a blocked
-worker.
+Against an older tincan both arrived as one refusal and birddog had to record
+`delivery_unknown` for either, which is why the connector refuses to start on
+one. In practice this is reached rarely — birddog retries only after a
+`failed` attempt, and tincan does not burn a key on a send that never landed —
+but rarely is not never, and the cost of being wrong is a false negative on a
+blocked worker.
 
 Alerts carry `--reply-via birddog ack --instance <id> --incident <n>`, because
 an orchestrator replying down this channel would be answering a one-shot
