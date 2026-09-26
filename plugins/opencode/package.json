@@ -1,6 +1,6 @@
 {
   "name": "@brutalsystems/birddog-opencode",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "opencode plugin for birddog — publishes a session's state so birddog can observe it from outside. Read-only: it reports, and never acts on the session.",
   "keywords": [
     "opencode",
