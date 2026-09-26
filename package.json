@@ -1,6 +1,6 @@
 {
   "name": "@brutalsystems/birddog",
-  "version": "0.6.1",
+  "version": "1.0.0",
   "description": "Watch live coding-agent sessions on this machine and report what they are doing. Observation only: it never prompts, approves, or starts and stops a session.",
   "keywords": [
     "claude-code",
