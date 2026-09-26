@@ -26,6 +26,15 @@ node_modules/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+# An instance store is named .db, not .sqlite, and replaying a corpus means
+# copying real ones somewhere to read them. They hold session ids, workspace
+# paths and target ids, which are frequently a customer's name.
+*.db
+*.db-shm
+*.db-wal
+# Same escape hatch as above, for the same reason: a blanket rule that hides a
+# fixture passes locally and fails in CI.
+!**/testdata/*.db
 .birddog/
 
 # Live-probe records and private working notes stay local.

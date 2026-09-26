@@ -88,6 +88,10 @@ describe('what the docs claim about publishing', () => {
   // stays out of it. A home path or an address is the shape that leaks, and a
   // first scan for this missed real hits because of a bad pathspec — so it is
   // a test now rather than a thing anyone remembers to grep for.
+  // The list covers what a developer writes while looking at their own
+  // machine. docs/troubleshooting.md is written from a symptom someone just
+  // reproduced locally, and scripts/replay-activity.mjs reads that machine's
+  // own instance stores — both are the shape that leaks.
   it('carries no home paths or addresses', () => {
     const files = [
       'README.md',
@@ -95,6 +99,8 @@ describe('what the docs claim about publishing', () => {
       'CLAUDE.md',
       join('docs', 'decisions.md'),
       join('docs', 'ci-cd-standard.md'),
+      join('docs', 'troubleshooting.md'),
+      join('scripts', 'replay-activity.mjs'),
     ];
     for (const file of files) {
       const text = read(file);

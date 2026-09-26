@@ -198,10 +198,53 @@ plainly what the number means per signal, in
 [docs/cli.md](./cli.md#attention-conditions) and beside `NoProgressAfter`. The
 underlying conflation — an activity field that carries a transition timestamp,
 with nothing in the record saying which — is a separate problem and is filed
-as [#37](https://github.com/BrutalSystems/birddog/issues/37); if it is fixed,
+as [#27](https://github.com/BrutalSystems/birddog/issues/27); if it is fixed,
 a default becomes answerable per signal kind and this entry should be revisited.
 
 Measurement recorded in [#27](https://github.com/BrutalSystems/birddog/issues/27).
+
+**Revisited 2026-09-26.** [D8](#d8--the-activity-timestamp-says-what-it-is)
+shipped `activity_resolution`, which is the precondition named above, so the
+corpus was replayed with the split this entry asks for. The decision is
+unchanged — no default ships — but for a narrower reason than before, and the
+replay is now [scripts/replay-activity.mjs](../scripts/replay-activity.mjs)
+rather than something to be written again from scratch.
+
+The replay reproduces the figures above on the same uninstrumented population
+(6.85h of working time, and the identical count of runs a 5m, 10m, 15m or 30m
+threshold would have fired on), which is what makes the rest of it comparable.
+The sharper statistic is not staleness but how often the timestamp moves *while
+work is being reported*: **once across 164 uninstrumented working runs**,
+against **93 movements across 11 instrumented ones**, a median of 7s apart.
+Stationary, not merely coarse.
+
+What the instrumented number measures is the part that bears on a default.
+Hooks touch the activity marker on every event they handle and every one is a
+boundary — `PreToolUse`, `PostToolUse`, a permission answered, a turn ending.
+There is no periodic stamp and there must not be one, for the reason recorded
+beside `LastActivityAt`. So on an instrumented session the duration is **time
+since the last tool boundary**, and its ceiling while healthy is the longest
+single tool call rather than the longest turn. That is what divides the two
+cases: uninstrumented, a working session crosses no boundary for the whole turn
+and is indistinguishable in principle from a wedged one; instrumented, the two
+differ except while one long tool call is in flight.
+
+It also removes the methodological blocker this entry records. A corpus with no
+stall in it can never show that a threshold catches anything — but for the
+instrumented signal nothing needs to be caught to justify a number: the
+false-positive rate follows from the distribution of tool-call durations, and
+detection follows from the boundary argument. **What is missing is no longer a
+principle but a measurement**: the upper tail of single-tool-call duration on
+real workloads. The instrumented corpus is one Claude Code session, 0.30h of
+working time, whose longest gap was 122s and which contains no build and no test
+suite — a forty-minute `bash` is forty minutes of entirely legitimate staleness,
+and nothing here bounds that. There is no instrumented opencode corpus at all.
+
+When that is measured, the default belongs where the signal kind is known.
+[D8](#d8--the-activity-timestamp-says-what-it-is) rejected branching inside the
+policy and that still holds; the monitor resolves a target's policy before it
+evaluates one, so a default can be chosen there and `Evaluate` handed a plain
+duration, leaving it with no knowledge of the provider.
 
 ## D7 — event retention is opt-in, and a terminal outcome outlives it
 
