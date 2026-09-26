@@ -1,0 +1,3 @@
+{"type": "assistant", "isSidechain": false, "message": {"role": "assistant", "content": [{"type": "text", "text": "Redacted prose. Is this the question?"}]}}
+{"type": "assistant", "isSidechain": false, "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "AskUserQuestion", "id": "toolu_01R1y1G7vXkwLN6mYi57bi7v", "input": {"questions": [{"question": "Redacted question?"}]}}]}}
+{"type": "user", "isSidechain": false, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_013cbWnDsVorzrihgQkCCdrU", "content": "redacted"}]}}

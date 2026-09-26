@@ -17,6 +17,12 @@ node_modules/
 *.key
 *.log
 *.jsonl
+# …except committed test fixtures. The blanket rule above exists so a real
+# session transcript is never committed by accident, and it silently excluded
+# the redacted fixture that pins Claude Code's record shape: green locally,
+# where the file is on disk, and red in CI, which checks out only what is
+# tracked. `make check` now refuses an ignored file under any testdata/.
+!**/testdata/*.jsonl
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
