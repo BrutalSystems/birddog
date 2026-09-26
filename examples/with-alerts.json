@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "checkout-refactor",
+  "notification": {
+    "kind": "claude-inbox",
+    "options": {
+      "session_id": "SESSION-ID-OF-THE-ORCHESTRATOR-FROM-birddog-discover"
+    }
+  },
+  "targets": [
+    {
+      "id": "worker-1",
+      "provider": "claude",
+      "attachment": {
+        "kind": "existing-session",
+        "session_id": "SESSION-ID-OF-THE-WORKER",
+        "pid": 41207,
+        "proc_start": "Mon Sep 21 15:53:11 2026"
+      },
+      "labels": {
+        "task_id": "T-42"
+      },
+      "policy": {
+        "alert_on": [
+          "input_requested",
+          "exit",
+          "quiet",
+          "observation_lost",
+          "no_progress"
+        ],
+        "quiet_after_seconds": 300,
+        "no_progress_after_seconds": 43200
+      }
+    }
+  ]
+}

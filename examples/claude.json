@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "checkout-refactor",
+  "targets": [
+    {
+      "id": "worker-1",
+      "provider": "claude",
+      "attachment": {
+        "kind": "existing-session",
+        "session_id": "REPLACE-WITH-session_id-FROM-birddog-discover",
+        "pid": 41207,
+        "proc_start": "Mon Sep 21 15:53:11 2026"
+      },
+      "workspace": "/absolute/path/to/worktree",
+      "labels": {"task_id": "T-42", "description": "Checkout worker"},
+      "policy": {
+        "alert_on": ["input_requested", "exit", "quiet", "observation_lost"],
+        "quiet_after_seconds": 300,
+        "idle_grace_seconds": 30
+      }
+    }
+  ]
+}

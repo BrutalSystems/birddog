@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One npm across both workflows. It does not only clear trusted publishing's
+# 11.5.1 floor — it decides what `npm pack` puts in the tarball, and npm's
+# forced-inclusion rules are exactly where majors differ. Leaving CI on the
+# runner's npm while publish.yml ran npm@latest meant two different packers
+# for one commit, so CI verified a tarball the release would not produce.
+# Keep this in step with publish.yml; a test asserts they agree.
+env:
+  NPM_VERSION: '12.0.2'
+
+jobs:
+  go:
+    name: Go
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-go v6 sets GOTOOLCHAIN=local, so a go command can no longer
+      # rescue itself by downloading a newer toolchain: whatever this step
+      # installs is what runs. Safe here only because go.mod pins `go 1.26.3`
+      # with no `toolchain` line, so the version installed IS the version
+      # required. Adding a `toolchain` directive would change what gets
+      # installed — v6 prefers it over the `go` directive.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./... -race
+      - name: smoke test
+        run: ./scripts/smoke.sh
+
+      # The CLI package ships the binary built above. Pack it here so a broken
+      # bin, a missing file, or a version that does not match fails a pull
+      # request rather than a release.
+      #
+      # No `cache:` on purpose. setup-node v5 added automatic npm caching, but
+      # it fires only when package.json declares `packageManager` or
+      # `devEngines.packageManager` — neither package.json here does, so both
+      # workflows stay uncached and identical. Adding that field would silently
+      # turn caching on in a repository whose whole npm story is that one
+      # pinned npm packs what ships; set `package-manager-cache: false` if it
+      # is ever added for another reason.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Pin npm
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm -v
+
+      - run: npm ci
+
+      - name: Verify the tarball guard itself
+        run: node scripts/verify-tarball.mjs --self-test --package cli
+
+      - name: Pack the CLI package
+        id: pack
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          echo "tarball=brutalsystems-birddog-$pkg.tgz" >> "$GITHUB_OUTPUT"
+          npm pack
+
+      - name: Verify the CLI tarball
+        run: node scripts/verify-tarball.mjs --package cli
+
+      # Install it the way a user would and assert the exact version string.
+      # "Did it print anything" is not enough: tincan passed that check while
+      # reporting a version three releases stale.
+      - name: Smoke-test the packed artifact
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          prefix=$(mktemp -d)
+          npm install -g --prefix "$prefix" "./${{ steps.pack.outputs.tarball }}"
+
+          got=$("$prefix/bin/birddog" --version 2>&1 | head -1)
+          echo "binary reports: $got"
+          if [ "$got" != "birddog $pkg" ]; then
+            echo "::error::expected 'birddog $pkg', got '$got'"
+            exit 1
+          fi
+
+          # A read-only command that touches the real adapters, to prove the
+          # installed binary runs rather than merely printing a constant.
+          "$prefix/bin/birddog" doctor --json > /dev/null
+
+  plugin:
+    name: opencode plugin
+    # Not a preference: package.json declares os/cpu so that a linux install
+    # is refused by name rather than succeeding and dying with "cannot execute
+    # binary file". Those fields bind the project being worked in too, so
+    # `npm ci` at this root fails EBADPLATFORM on ubuntu. Nothing is lost —
+    # internal/platform/* has no non-darwin files, so this repository's Go
+    # tests could never have run there either.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # Before `npm ci`, so the lockfile is resolved by the same npm that packs.
+      - name: Pin npm
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm -v
+
+      - run: npm ci
+
+      # A half-bumped version ships a plugin whose records the binary reads
+      # under a different version than it reports. Fail here, not in the field.
+      - run: npm run check-version
+
+      - run: npm run typecheck:plugin
+      - run: npm test
+
+      # Tarball drift surfaces when it is introduced rather than at release
+      # time. The self-test runs first: a guard nobody has watched fail is not
+      # a guard.
+      - name: Verify the tarball guard itself
+        run: node scripts/verify-tarball.mjs --self-test --package plugin
+      - name: Verify the tarball
+        run: node scripts/verify-tarball.mjs --package plugin

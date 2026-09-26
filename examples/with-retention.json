@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "bounded-history",
+  "retention": {
+    "max_age_seconds": 604800,
+    "hold_uncollected_seconds": 86400
+  },
+  "targets": [
+    {
+      "id": "worker-1",
+      "provider": "claude",
+      "attachment": {"kind": "existing-session", "session_id": "REPLACE-ME"},
+      "policy": {
+        "alert_on": ["input_requested", "exit", "quiet", "observation_lost"],
+        "quiet_after_seconds": 300
+      }
+    }
+  ]
+}

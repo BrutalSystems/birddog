@@ -1,0 +1,34 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Node (opencode plugin)
+node_modules/
+*.tgz
+.npmrc
+
+# Credentials and local runtime state
+.env
+.env.*
+*.pem
+*.key
+*.log
+*.jsonl
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.birddog/
+
+# Live-probe records and private working notes stay local.
+# The raw record of what was inspected on a developer's machine never ships;
+# what it established belongs in docs/providers.md instead.
+probes/
+.private/
+integration-findings.md
+.superpowers/
+
+# macOS
+.DS_Store

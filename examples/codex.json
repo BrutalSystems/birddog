@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "billing-sync",
+  "targets": [
+    {
+      "id": "worker-1",
+      "provider": "codex",
+      "attachment": {
+        "kind": "existing-session",
+        "session_id": "REPLACE-WITH-thread-id-FROM-birddog-discover"
+      },
+      "labels": {"task_id": "T-43"},
+      "policy": {
+        "alert_on": ["exit", "observation_lost"],
+        "quiet_after_seconds": 600
+      }
+    }
+  ]
+}

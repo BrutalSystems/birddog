@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "long-test-run",
+  "targets": [
+    {
+      "id": "worker-1",
+      "provider": "claude",
+      "attachment": {"kind": "existing-session", "session_id": "REPLACE-ME"},
+      "policy": {
+        "alert_on": ["idle", "input_requested", "exit", "quiet", "observation_lost"],
+        "quiet_after_seconds": 300,
+        "idle_grace_seconds": 30,
+        "expected_quiet_until": "2026-09-21T18:30:00Z",
+        "expected_quiet_reason": "running the full integration suite"
+      }
+    }
+  ]
+}

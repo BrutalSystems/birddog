@@ -1,0 +1,39 @@
+{
+  "name": "@brutalsystems/birddog-opencode",
+  "version": "0.6.1",
+  "description": "opencode plugin for birddog — publishes a session's state so birddog can observe it from outside. Read-only: it reports, and never acts on the session.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "birddog",
+    "agents",
+    "monitoring",
+    "observability"
+  ],
+  "license": "MIT",
+  "author": "Mike Williams",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrutalSystems/birddog.git",
+    "directory": "plugins/opencode"
+  },
+  "homepage": "https://github.com/BrutalSystems/birddog#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./birddog.ts",
+  "exports": {
+    ".": "./birddog.ts",
+    "./server": "./birddog.ts"
+  },
+  "files": [
+    "birddog.ts",
+    "birddog-lib",
+    "README.md",
+    "LICENSE"
+  ]
+}

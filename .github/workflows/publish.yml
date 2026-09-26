@@ -1,0 +1,352 @@
+name: Publish
+
+# Tag-driven, matching RELEASING.md. Pushing v0.1.0 publishes 0.1.0, and
+# nothing publishes from a branch push — a release should be a deliberate act.
+#
+# Authentication is npm trusted publishing over OIDC: there is no npm token,
+# here or in the repository secrets. The registry trusts this exact repo, this
+# exact workflow FILENAME, and the `npm` environment below. Renaming this file
+# or that environment breaks publishing until the trusted publisher is
+# reconfigured. See docs/ci-cd-standard.md.
+#
+# Two packages ship from this one run, in one version: the birddog CLI, whose
+# bin is the compiled binary, and the opencode plugin the binary reads records
+# from. Releasing them separately would reintroduce exactly the version skew
+# the plugin split exists to prevent.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+# The same pin as ci.yml, and for the same reason: the npm that packs decides
+# what ships. `npm@latest` here meant the release was packed by a version no
+# CI run had exercised. Keep the two in step; a test asserts they agree.
+env:
+  NPM_VERSION: '12.0.2'
+
+jobs:
+  # The plugin's only consumer is the Go binary that reads its records, so a
+  # release that breaks it is a release that breaks the plugin. That has to be
+  # checked on macOS: birddog's platform packages are darwin-only by design,
+  # and the docs decline to claim Linux until its process identity, IPC,
+  # filesystem and lifecycle behaviour have been tested. Running this on the
+  # ubuntu publish runner did not test Linux — it just failed to build.
+  go:
+    name: Go (macOS)
+    runs-on: macos-latest
+    if: github.repository == 'BrutalSystems/birddog'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./... -race
+      - name: smoke test
+        run: ./scripts/smoke.sh
+
+  publish:
+    # Step 8 of docs/ci-cd-standard.md installs the tarball and RUNS the
+    # binary, and ubuntu cannot execute a darwin Mach-O. Publishing from
+    # ubuntu would mean deleting the one check that catches a broken bin.
+    # npm ci also refuses this root on linux: package.json declares os/cpu.
+    runs-on: macos-latest
+    needs: go
+
+    # A fork that pushes a tag gets no run at all. OIDC would refuse it anyway,
+    # but an explicit gate beats a confusing red run in someone else's fork.
+    if: github.repository == 'BrutalSystems/birddog'
+
+    # Part of the trusted-publisher identity, not decoration. Also where a
+    # required reviewer goes, since OIDC widens publish rights from "whoever
+    # holds the token" to "whoever can push a tag".
+    environment: npm
+
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # OIDC: the npm credential itself, and provenance
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Same majors as ci.yml, deliberately — this is the workflow the Node 20
+      # deprecation was really about, and a release path has no manual
+      # fallback. ci.yml carries the notes on setup-go's GOTOOLCHAIN=local and
+      # on why no npm cache is configured; both apply here unchanged.
+      #
+      # setup-node v7 also drops the dummy NODE_AUTH_TOKEN it used to export,
+      # which matters for the tokenless OIDC publish below: there is no npm
+      # token here and nothing should look as though there is.
+      - uses: actions/setup-node@v7
+        with:
+          # The engines floor. The runner stays on it; npm is upgraded below
+          # rather than moving the whole runtime.
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+
+      # Node 22 ships npm 10.x; trusted publishing needs >= 11.5.1. Pinned
+      # rather than `latest` so the artifact is packed by the same npm CI
+      # verified — see the env block above.
+      - name: Pin npm
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm -v
+
+      # Cheapest checks first — fail before installing anything.
+      - name: Tag matches the version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version $pkg"
+            exit 1
+          fi
+          echo "releasing $pkg"
+
+      # A version already on the registry is not an error — a re-pushed tag, or
+      # a release published by hand, should leave this run green with nothing
+      # to do. Shipping the WRONG version is what the check above catches, and
+      # that one does fail.
+      - name: Already published?
+        id: published
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if npm view --prefer-online "@brutalsystems/birddog@$pkg" version >/dev/null 2>&1; then
+            echo "::notice::@brutalsystems/birddog@$pkg is already on the registry — nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: npm ci
+        if: steps.published.outputs.skip == 'false'
+
+      # The plugin and the binary that reads its records ship as one version.
+      - run: npm run check-version
+        if: steps.published.outputs.skip == 'false'
+
+      - run: npm run typecheck:plugin
+        if: steps.published.outputs.skip == 'false'
+
+      - run: npm test
+        if: steps.published.outputs.skip == 'false'
+
+      - name: Verify the tarball guard itself
+        if: steps.published.outputs.skip == 'false'
+        run: node scripts/verify-tarball.mjs --self-test
+
+      - name: Pack the CLI package
+        id: pack
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          echo "tarball=brutalsystems-birddog-$pkg.tgz" >> "$GITHUB_OUTPUT"
+          npm pack
+
+      - name: Verify the CLI tarball
+        if: steps.published.outputs.skip == 'false'
+        run: node scripts/verify-tarball.mjs --package cli
+
+      # Install the packed artifact and run the binary. Nothing else in this
+      # pipeline would notice a bin that does not exist, does not run, or
+      # reports a version nobody can reconcile with what is installed.
+      - name: Smoke-test the packed CLI artifact
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          prefix=$(mktemp -d)
+          npm install -g --prefix "$prefix" "./${{ steps.pack.outputs.tarball }}"
+
+          got=$("$prefix/bin/birddog" --version 2>&1 | head -1)
+          echo "binary reports: $got"
+          if [ "$got" != "birddog $pkg" ]; then
+            echo "::error::expected 'birddog $pkg', got '$got'"
+            exit 1
+          fi
+
+          # A read-only command that touches the real adapters, to prove the
+          # installed binary runs rather than merely printing a constant.
+          "$prefix/bin/birddog" doctor --json > /dev/null
+
+      - name: Publish the CLI package
+        if: steps.published.outputs.skip == 'false'
+        run: npm publish "./${{ steps.pack.outputs.tarball }}" --provenance
+
+      # The opencode plugin ships as its own package so opencode can install it
+      # by npm specifier instead of the user copying files into
+      # ~/.config/opencode/ by hand. Same run, same version, same trusted
+      # publisher deliberately — releasing them apart would reintroduce exactly
+      # the skew the split removed.
+      #
+      # REQUIRES its own trusted-publisher registration: OIDC trust is per
+      # package. See RELEASING.md.
+      - name: Plugin package — already published?
+        id: plugin_published
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          if npm view --prefer-online "@brutalsystems/birddog-opencode@$pkg" version >/dev/null 2>&1; then
+            echo "::notice::@brutalsystems/birddog-opencode@$pkg is already on the registry"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack the plugin package
+        id: plugin_pack
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          ( cd plugins/opencode && npm pack )
+          echo "tarball=plugins/opencode/brutalsystems-birddog-opencode-$pkg.tgz" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the plugin tarball
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: node scripts/verify-tarball.mjs --package plugin
+
+      # Install the packed artifact and load it the way opencode would.
+      # Nothing else in this pipeline would notice a missing birddog-lib file
+      # or an entry point the loader cannot reach — the unit tests import
+      # source, not the package.
+      - name: Smoke-test the packed plugin artifact
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          prefix=$(mktemp -d)
+          cd "$prefix"
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/${{ steps.plugin_pack.outputs.tarball }}"
+
+          # Resolve through exports["./server"], which is the entry point
+          # opencode's loader actually reads — it ignores exports["."]. A
+          # package declaring only the latter is fetched, its package.json is
+          # read, the session runs, and the plugin never executes.
+          # The plugin is TypeScript, loaded untranspiled by opencode's Bun
+          # runtime. Node cannot import it directly, so resolution and the
+          # export shape are checked by reading the resolved file.
+          node -e "
+            const { createRequire } = require('node:module');
+            const require2 = createRequire(process.cwd() + '/');
+            const entry = require2.resolve('@brutalsystems/birddog-opencode/server');
+            console.log('loader entry point:', entry);
+            const src = require('node:fs').readFileSync(entry, 'utf8');
+            const exported = [...src.matchAll(/^export\s+(?:const|function|async function)\s+(\w+)/gm)].map(m => m[1]);
+            console.log('exports:', exported.join(', ') || '(none)');
+            if (exported.length !== 1 || exported[0] !== 'Birddog') {
+              console.error('expected exactly one export named Birddog');
+              process.exit(1);
+            }
+            if (/^export\s+default/m.test(src)) {
+              console.error('package exports a default; opencode would invoke it as a plugin');
+              process.exit(1);
+            }
+            const v = src.match(/const VERSION = '([^']+)'/)?.[1];
+            if (v !== '$pkg') { console.error('entry point reports ' + v + ', expected $pkg'); process.exit(1); }
+            console.log('plugin reports version ' + v);
+          "
+
+          # The library the entry point imports must be there too.
+          test -f node_modules/@brutalsystems/birddog-opencode/birddog-lib/plugin.ts \
+            || { echo '::error::birddog-lib did not ship'; exit 1; }
+
+      # Publish the artifact that was just smoke-tested, not the directory, so
+      # what shipped is exactly what was checked. No NODE_AUTH_TOKEN: OIDC
+      # supplies the credential, and provenance follows from it.
+      - name: Publish the plugin package
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: npm publish "./${{ steps.plugin_pack.outputs.tarball }}" --provenance
+
+      # BOTH packages, not just one. The split exists so the two can never
+      # drift apart in version, and a confirmation that looks at one of them is
+      # blind to exactly that drift: a publish that reports success and never
+      # lands leaves this run green while claiming both shipped.
+      #
+      # --prefer-online on every read, and a window sized for the larger
+      # package. At v0.1.3 this step declared the CLI unserved for its whole
+      # 200s while the registry was serving it: `npm view` answered from the
+      # runner's cached packument, and a poll loop that checks early caches
+      # the 404 it then keeps re-reading. The artifact diff below is gated on
+      # this answer, so a wrong one skips it silently on a green run.
+      - name: Confirm the registry is serving them
+        id: served
+        if: steps.published.outputs.skip == 'false' || steps.plugin_published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          served=true
+          for name in @brutalsystems/birddog @brutalsystems/birddog-opencode; do
+            ok=false
+            for i in $(seq 1 20); do
+              if npm view --prefer-online "$name@$pkg" version >/dev/null 2>&1; then
+                echo "registry serving $name@$pkg"
+                npm view --prefer-online "$name@$pkg" dist.integrity
+                ok=true
+                break
+              fi
+              echo "$name not yet (attempt $i), waiting 30s"; sleep 30
+            done
+            if [ "$ok" != "true" ]; then
+              served=false
+              echo "::warning::registry still not serving $name@$pkg — publishes lag by 1-2 minutes"
+            fi
+          done
+          echo "served=$served" >> "$GITHUB_OUTPUT"
+
+      # Everything above inspects a local build. This is the only check that
+      # sees what a consumer downloads. Advisory, and ordered after everything
+      # irreversible on purpose: `npm view` can answer while `npm pack` still
+      # 404s, which is not a disagreement about content, just two endpoints
+      # catching up. Only a real file-list difference fails the run.
+      - name: Verify the PUBLISHED artifacts
+        if: steps.served.outputs.served == 'true'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          mkdir -p /tmp/published
+
+          check() {
+            name="$1"; local_tarball="$2"; file="$3"
+            got=no
+            # As long a window as the serve poll above, because this waits on
+            # a later event than that one did: `npm view` answers before the
+            # tarball endpoint serves the file, which the comment above the
+            # step has always said. At v0.1.4 six attempts gave up 80 seconds
+            # before the plugin's tarball existed, and reported its contents
+            # unverified when they were correct.
+            for i in $(seq 1 20); do
+              if npm pack --prefer-online "$name@$pkg" --pack-destination /tmp/published >/dev/null 2>&1; then
+                got=yes; break
+              fi
+              echo "$name tarball not downloadable yet (attempt $i), waiting 30s"; sleep 30
+            done
+            if [ "$got" != "yes" ]; then
+              echo "::warning::registry never served a downloadable $name@$pkg — publish succeeded, contents unverified"
+              return 0
+            fi
+            tar tzf "/tmp/published/$file" | sed 's|^package/||' | grep -v '/$' | sort > /tmp/remote.txt
+            tar tzf "$local_tarball"       | sed 's|^package/||' | grep -v '/$' | sort > /tmp/local.txt
+            if ! diff -u /tmp/local.txt /tmp/remote.txt; then
+              echo "::error::the published $name tarball does not match what this run packed"
+              exit 1
+            fi
+            echo "$name matches — $(wc -l < /tmp/remote.txt) files"
+          }
+
+          if [ "${{ steps.published.outputs.skip }}" = "false" ]; then
+            check @brutalsystems/birddog "./${{ steps.pack.outputs.tarball }}" "brutalsystems-birddog-$pkg.tgz"
+          fi
+          if [ "${{ steps.plugin_published.outputs.skip }}" = "false" ]; then
+            check @brutalsystems/birddog-opencode "./${{ steps.plugin_pack.outputs.tarball }}" "brutalsystems-birddog-opencode-$pkg.tgz"
+          fi
+
+      # birddog has no RELEASE_NOTES.md; the tag annotation is its release
+      # record. See docs/ci-cd-standard.md.
+      - name: GitHub Release
+        if: steps.published.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-from-tag --verify-tag
