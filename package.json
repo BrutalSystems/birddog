@@ -47,7 +47,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "check-version": "node scripts/sync-version.mjs --check",
     "verify-tarball": "node scripts/verify-tarball.mjs",
-    "version": "node scripts/sync-version.mjs && npm run check-version && git add plugins/opencode/package.json plugins/opencode/birddog.ts internal/version/version.go",
+    "version": "node scripts/sync-version.mjs && npm run check-version && git add plugins/opencode/package.json plugins/opencode/birddog.ts internal/version/version.go plugins/claude-code/.claude-plugin/plugin.json",
     "postversion": "git push origin HEAD --follow-tags"
   },
   "devDependencies": {

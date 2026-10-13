@@ -9,7 +9,7 @@ command:
 npm version <patch|minor|major> -m "%s — <what changed>"
 ```
 
-That is all of it. `npm version` rewrites the four version sites, commits,
+That is all of it. `npm version` rewrites the five version sites, commits,
 tags `v<version>`, and `postversion` pushes commit and tag — and **the pushed
 tag is what publishes**. `publish.yml` fires on `v*.*.*` and publishes both
 packages over OIDC. There is no separate `npm publish` step and no npm token

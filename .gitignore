@@ -47,3 +47,6 @@ integration-findings.md
 
 # macOS
 .DS_Store
+
+# Claude Code worktrees made inside this checkout.
+.claude/worktrees/
