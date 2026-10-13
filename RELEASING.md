@@ -59,7 +59,7 @@ npm version patch -m "%s — <what changed>"    # or minor / major
 gh run watch --repo BrutalSystems/birddog
 ```
 
-That is the whole release. It rewrites all four version sites, commits them,
+That is the whole release. It rewrites all five version sites, commits them,
 creates the `v<version>` tag, and pushes commit and tag — which fires
 `publish.yml`.
 
@@ -69,7 +69,7 @@ tag annotation becomes the GitHub Release body. Write it as release notes.
 **If you need the pieces separately** — a dry run, or a release built by hand:
 
 ```sh
-npm run sync-version      # rewrites the four sites and nothing else
+npm run sync-version      # rewrites the five sites and nothing else
 npm run check-version     # reports drift without changing anything
 npm version <v> --no-git-tag-version   # bump without committing or tagging
 
@@ -84,7 +84,7 @@ Neither publishes. Only a pushed `v*` tag does.
 > nothing new to push that is a harmless no-op, but it will carry any other
 > local commits on the branch with it.
 
-## The four version sites
+## The five version sites
 
 Root `package.json` is the source of truth — and, since it became
 `@brutalsystems/birddog`, a published artifact in its own right rather than
@@ -96,6 +96,7 @@ only a place the number lives. The `version` lifecycle hook runs
 | `plugins/opencode/package.json` | what the registry serves |
 | `plugins/opencode/birddog.ts` | what the plugin reports at runtime |
 | `internal/version/version.go` | what the binary reports |
+| `plugins/claude-code/.claude-plugin/plugin.json` | the Claude Code plugin, whose skill describes this release |
 
 The runtime constant is the one that catches a stale install: comparing
 `grep plugin_version ~/.birddog/opencode/*.json` against the installed package

@@ -1,0 +1,14 @@
+{
+  "name": "birddog",
+  "description": "birddog's own Claude Code plugin, versioned with the birddog CLI.",
+  "owner": {
+    "name": "BrutalSystems"
+  },
+  "plugins": [
+    {
+      "name": "birddog",
+      "source": "./plugins/claude-code",
+      "description": "Teaches Claude Code to watch live coding-agent sessions with the birddog CLI."
+    }
+  ]
+}

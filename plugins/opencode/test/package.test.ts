@@ -63,4 +63,14 @@ describe('version agreement', () => {
     const root = JSON.parse(readFileSync(join(pluginDir, '..', '..', 'package.json'), 'utf8'));
     expect(pkg.version).toBe(root.version);
   });
+
+  // The Claude Code plugin's skill describes this release's CLI. A manifest
+  // that lags tells Claude Code it has the newest skill when it does not.
+  it('matches the Claude Code plugin manifest', () => {
+    const root = JSON.parse(readFileSync(join(pluginDir, '..', '..', 'package.json'), 'utf8'));
+    const manifest = JSON.parse(
+      readFileSync(join(pluginDir, '..', 'claude-code', '.claude-plugin', 'plugin.json'), 'utf8'),
+    );
+    expect(manifest.version).toBe(root.version);
+  });
 });

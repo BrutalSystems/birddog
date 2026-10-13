@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * One version, four places.
+ * One version, five places.
  *
  *   package.json                          (source of truth; npm bumps it)
  *   plugins/opencode/package.json         what the registry serves
  *   plugins/opencode/birddog.ts           what the plugin reports at runtime
  *   internal/version/version.go           what the binary reports
+ *   plugins/claude-code/.claude-plugin/plugin.json
+ *                                         the Claude Code plugin, whose skill
+ *                                         describes this release's CLI
  *
  * The root package.json is the source of truth. This copies it into the
  * published plugin package and into the Go build, and `--check` fails when
@@ -90,6 +93,7 @@ function go(relative) {
 }
 
 json('plugins/opencode/package.json');
+json('plugins/claude-code/.claude-plugin/plugin.json');
 go('internal/version/version.go');
 // The plugin reports this at runtime, and it is how an operator tells a
 // loaded plugin from the package that was installed. Left unsynced it goes

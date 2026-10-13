@@ -1,0 +1,12 @@
+{
+  "name": "birddog",
+  "version": "2.0.0",
+  "description": "Teaches Claude Code to watch live coding-agent sessions with the birddog CLI: discover, start an owned instance, follow events, acknowledge alerts, stop.",
+  "author": {
+    "name": "BrutalSystems"
+  },
+  "homepage": "https://github.com/BrutalSystems/birddog#readme",
+  "repository": "https://github.com/BrutalSystems/birddog",
+  "license": "MIT",
+  "keywords": ["birddog", "monitoring", "agents", "observability"]
+}
