@@ -24,6 +24,7 @@ import (
 	"github.com/BrutalSystems/birddog/internal/machine"
 	"github.com/BrutalSystems/birddog/internal/monitor"
 	"github.com/BrutalSystems/birddog/internal/notify"
+	"github.com/BrutalSystems/birddog/internal/platform/where"
 	// Imported for its side effect: registering the connector makes it
 	// configurable. A new route is a new package and one line here.
 	_ "github.com/BrutalSystems/birddog/internal/notify/claudeinbox"
@@ -88,6 +89,7 @@ func runDiscover(args []string, stdout io.Writer) error {
 		return err
 	}
 	rows = append(rows, FromCodex(codexSessions)...)
+	Locate(rows, where.Default().Resolve)
 
 	if *asJSON {
 		return RenderJSON(stdout, rows)

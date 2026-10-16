@@ -13,9 +13,10 @@ Lists the sessions on this machine that can be registered as targets. This is
 where a `session_id` comes from.
 
 ```
-NAME          PROVIDER  STATUS       PID    SESSION       CWD
-api-refactor  claude    busy         41207  11111111-…    /work/api
-auth-thread   codex     unavailable  41880  01a0c46d-…    /work/auth
+NAME          PROVIDER  STATUS       PID    WHERE                               SESSION       CWD
+api-refactor  claude    busy         41207  tmux muster:muster-bafad08e…:0.%38  11111111-…    /work/api
+docs-pass     claude    idle         41377  Ghostty ttys002                     22222222-…    /work/docs
+auth-thread   codex     unavailable  41880  ttys009                             01a0c46d-…    /work/auth
 ```
 
 A session is listed as live only on evidence — for Claude Code, its socket
@@ -30,6 +31,57 @@ the session, so birddog says it cannot see the state instead of guessing.
 For Claude Code, copy `pid` and `proc_start` into the target's attachment
 alongside `session_id`: they are what let birddog tell a finished session from
 one it merely cannot see.
+
+### Where a session lives
+
+Each live session with a pid — a Claude Code session, or the process holding
+a Codex thread's lock — carries a `location` saying where to find it, so a
+caller can focus its window or attach its pane:
+
+```json
+"location": {
+  "tty": "/dev/ttys005",
+  "terminal_app": "Ghostty",
+  "tmux": {
+    "socket": "/private/tmp/tmux-501/muster",
+    "socket_name": "muster",
+    "session": "muster-bafad08e-66ea-4330-b87f-a00feb6944c6",
+    "window": "0",
+    "pane": "%38",
+    "target": "muster-bafad08e-66ea-4330-b87f-a00feb6944c6:0.0",
+    "attached": false
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `tty` | The session's controlling terminal. |
+| `terminal_app` | The macOS app hosting that terminal — Ghostty, Terminal, iTerm2, Scotty — named after the nearest ancestor process that runs from an `.app` bundle. For a tmux pane it comes from an attached client, since the tmux server is a daemon; an unattached pane has none. **Best-effort**: omitted whenever it cannot be told, including over ssh. |
+| `tmux.socket` | The tmux server's socket, absolute, for `tmux -S`. |
+| `tmux.socket_name` | The `-L` name of that socket (`muster` for muster's sessions, `default` for plain `tmux`). |
+| `tmux.session`, `window`, `pane` | The tmux session name, window index and pane id (`%38`; stable for the pane's life). |
+| `tmux.target` | `session:window.pane-index`, ready for `tmux -t`. |
+| `tmux.attached` | Whether any client is attached to that tmux session. |
+
+`tmux` is filled in only when the session's process descends from a tmux
+server, and only servers whose sockets sit in the default directory
+(`$TMUX_TMPDIR`, or `/tmp`, then `tmux-<uid>`) are asked; a socket whose server
+has gone is skipped. A pane on a server started with `-S` elsewhere shows only
+its `tty`. `location` is absent for a session that is not live, or when nothing
+could be found — locating never fails the listing.
+
+The WHERE column condenses it: `tmux <socket_name>:<session>:<window>.<pane>`
+(long session names cut short; the JSON has them whole), `<app> <tty>`, a bare
+`<tty>`, or `—`.
+
+birddog only lists: it runs `tmux list-panes` and `list-clients` and nothing
+else, and never attaches or sends keys. To go to a session yourself:
+
+```sh
+tmux -S /private/tmp/tmux-501/muster attach -t 'muster-bafad08e-…:0.0'
+tmux -L muster attach -t 'muster-bafad08e-…:0.0'   # same server, by name
+```
 
 ## `birddog start --config FILE [--json] [--foreground] [--owner SESSION]`
 
