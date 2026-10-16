@@ -161,9 +161,14 @@ var platformLimitations = []string{
 // Reads only. An unreadable or absent settings file is not a fault: it means
 // no hooks are installed, which is a legitimate way to run birddog and is
 // reported as a choice rather than an error.
+//
+// The settings file is found the way `hooks install` finds it, so doctor run
+// under a profile's CLAUDE_CONFIG_DIR reports that profile's hooks rather than
+// the home directory's, and the two commands cannot disagree about where the
+// hooks are.
 func instrumentationReports() []instrument.Report {
 	var settings map[string]any
-	if path, err := defaultSettingsPath(); err == nil {
+	if path, _, err := resolveSettingsPath("", ""); err == nil {
 		if read, err := readSettings(path); err == nil {
 			settings = read
 		}

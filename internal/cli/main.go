@@ -69,6 +69,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 
 	if err != nil {
 		if errors.Is(err, errUsage) {
+			// A bare errUsage comes from the flag package, which has already
+			// printed why. One wrapped with a message has not.
+			if err != errUsage {
+				fmt.Fprintf(stderr, "birddog: %v\n", err)
+			}
 			return ExitUsage
 		}
 		// A coded error keeps its code in the message, so a caller reading
@@ -124,10 +129,11 @@ Usage:
   birddog prune [--dry-run] [--json]
         Forget instances that are over. Never stops a running one.
 
-  birddog hooks install|status|uninstall [--json] [--dry-run]
+  birddog hooks install|status|uninstall [--config-dir DIR | --settings FILE] [--json] [--dry-run]
         Let birddog see tool calls and permission requests in Claude Code.
-        Edits ~/.claude/settings.json, preserving what is already there, and
-        affects sessions started afterwards.
+        Edits $CLAUDE_CONFIG_DIR/settings.json (else ~/.claude/settings.json),
+        preserving what is already there. One profile per run: use
+        --config-dir to name another.
 
   birddog --version
         Print the version and exit.

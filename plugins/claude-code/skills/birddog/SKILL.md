@@ -152,10 +152,15 @@ A hand-started opencode TUI never appears: opencode is observable only with the
 ## Hooks — ask first
 
 `birddog hooks install` lets birddog see tool calls and permission requests in
-Claude Code. It edits the user's `~/.claude/settings.json` (preserving existing
-hooks, keeping a `.birddog-backup`), which affects every Claude Code session
-that reads that file. **Ask before running it**; show
-`birddog hooks install --dry-run` first. `birddog hooks status` reports a
+Claude Code. It edits the settings file of one Claude Code profile —
+`$CLAUDE_CONFIG_DIR/settings.json` when that is set, else
+`~/.claude/settings.json`, or `--config-dir DIR` to name another — preserving
+existing hooks and keeping a `.birddog-backup`. That affects every session
+running under that profile, and no other: a user with several profiles needs
+it once per profile. **Ask before running it**; show
+`birddog hooks install --dry-run` first — its `settings_path` says which file,
+and `handler_runnable: false` with a `handler_problem` means the hooks would
+fire and fail. `birddog hooks status` reports a
 partial install, which is worse than none. `birddog hooks uninstall` removes
 exactly its own entries.
 

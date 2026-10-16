@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,15 +78,69 @@ func runHooks(args []string, stdout io.Writer) error {
 	}
 }
 
-func defaultSettingsPath() (string, error) {
+// Where a settings path came from, as reported in settings_source. An operator
+// running several Claude Code profiles needs to see which rule picked the
+// file, because the wrong profile's settings look exactly like the right one's.
+const (
+	sourceFlag          = "flag"
+	sourceConfigDirFlag = "config_dir_flag"
+	sourceConfigDirEnv  = "CLAUDE_CONFIG_DIR"
+	sourceDefault       = "default"
+)
+
+// resolveSettingsPath picks the settings file the hooks commands act on.
+//
+// Claude Code reads its settings from $CLAUDE_CONFIG_DIR when that is set, so
+// a profile launched that way never sees ~/.claude/settings.json. Defaulting
+// to the home directory regardless would install hooks into a file the
+// session does not read, and report success.
+//
+// --settings and --config-dir are mutually exclusive rather than ranked: two
+// flags naming two files is a mistake worth stopping on, not a precedence
+// rule to remember.
+func resolveSettingsPath(settingsFlag, configDirFlag string) (path, source string, err error) {
+	switch {
+	case settingsFlag != "" && configDirFlag != "":
+		return "", "", fmt.Errorf("%w: --settings and --config-dir both name a settings file; give one", errUsage)
+	case settingsFlag != "":
+		path, err := expandHome(settingsFlag)
+		return path, sourceFlag, err
+	case configDirFlag != "":
+		dir, err := expandHome(configDirFlag)
+		return filepath.Join(dir, "settings.json"), sourceConfigDirFlag, err
+	}
+
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		dir, err := expandHome(dir)
+		return filepath.Join(dir, "settings.json"), sourceConfigDirEnv, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(home, ".claude", "settings.json"), sourceDefault, nil
+}
+
+// expandHome expands a leading ~. The shell does this for an unquoted
+// argument but not for a quoted one, an environment variable, or the right
+// side of --flag=~/x, and a literal "~" directory is never what was meant.
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return filepath.Join(home, path[1:]), nil
 }
 
 // readSettings parses a settings file, treating a missing one as empty.
+//
+// Numbers are decoded as json.Number so they are written back exactly as they
+// were read. Decoding them as float64 would turn a large integer elsewhere in
+// the operator's file into 1e+21 — a change to a key birddog has no business
+// touching.
 func readSettings(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -98,10 +153,23 @@ func readSettings(path string) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 
+	// Refuse rather than risk rewriting a file we did not understand.
+	refuse := func(err error) error {
+		return fmt.Errorf("%s is not valid JSON, so birddog will not rewrite it: %w", path, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		// Refuse rather than risk rewriting a file we did not understand.
-		return nil, fmt.Errorf("%s is not valid JSON, so birddog will not rewrite it: %w", path, err)
+	if err := dec.Decode(&settings); err != nil {
+		return nil, refuse(err)
+	}
+	// A second value after the first would be silently dropped on rewrite.
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, refuse(fmt.Errorf("unexpected content after the settings object"))
+	}
+	if settings == nil {
+		// The file said null. Treat it as empty rather than writing into nil.
+		settings = map[string]any{}
 	}
 	return settings, nil
 }
@@ -119,11 +187,16 @@ func writeSettings(path string, settings map[string]any) (backup string, err err
 		}
 	}
 
-	encoded, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
+	// HTML escaping is off so a hook command containing && or > is written
+	// back as the operator wrote it, not as \u0026\u0026.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(settings); err != nil {
 		return "", err
 	}
-	encoded = append(encoded, '\n')
+	encoded := buf.Bytes()
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
@@ -143,14 +216,19 @@ func writeSettings(path string, settings map[string]any) (backup string, err err
 
 // HooksResult is what the hooks commands report.
 type HooksResult struct {
-	SettingsPath string   `json:"settings_path"`
-	BackupPath   string   `json:"backup_path,omitempty"`
-	Changed      bool     `json:"changed"`
-	Installed    bool     `json:"installed"`
-	Partial      bool     `json:"partial,omitempty"`
-	BinaryPath   string   `json:"binary_path,omitempty"`
-	Events       []string `json:"events,omitempty"`
-	Missing      []string `json:"missing,omitempty"`
+	SettingsPath string `json:"settings_path"`
+
+	// SettingsSource says which rule chose SettingsPath: "flag" (--settings),
+	// "config_dir_flag" (--config-dir), "CLAUDE_CONFIG_DIR", or "default".
+	SettingsSource string `json:"settings_source"`
+
+	BackupPath string   `json:"backup_path,omitempty"`
+	Changed    bool     `json:"changed"`
+	Installed  bool     `json:"installed"`
+	Partial    bool     `json:"partial,omitempty"`
+	BinaryPath string   `json:"binary_path,omitempty"`
+	Events     []string `json:"events,omitempty"`
+	Missing    []string `json:"missing,omitempty"`
 
 	// HandlerRunnable says whether the registered handler can actually be
 	// run. Registration and runnability are different facts: a handler whose
@@ -172,7 +250,8 @@ const restartNote = "observed on Claude Code 2.1.267: sessions already running p
 
 func runHooksInstall(args []string, stdout io.Writer) error {
 	fs := flags("hooks install")
-	settingsPath := fs.String("settings", "", "settings file to edit (default: ~/.claude/settings.json)")
+	settingsPath := fs.String("settings", "", "settings file to edit (default: $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
+	configDir := fs.String("config-dir", "", "Claude Code config directory whose settings.json to edit; excludes --settings")
 	binary := fs.String("binary", "", "path to the birddog binary (default: this one)")
 	asJSON := fs.Bool("json", false, "emit JSON for programmatic use")
 	dryRun := fs.Bool("dry-run", false, "show what would change without writing")
@@ -180,16 +259,15 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	path := *settingsPath
-	if path == "" {
-		var err error
-		if path, err = defaultSettingsPath(); err != nil {
-			return err
-		}
+	path, source, err := resolveSettingsPath(*settingsPath, *configDir)
+	if err != nil {
+		return err
 	}
-	exe := *binary
+	exe, err := expandHome(*binary)
+	if err != nil {
+		return err
+	}
 	if exe == "" {
-		var err error
 		if exe, err = os.Executable(); err != nil {
 			return fmt.Errorf("locate the birddog binary: %w", err)
 		}
@@ -204,8 +282,18 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	// Checked here as status checks it. Install used to leave these fields at
+	// their zero value, so every install — dry run or not, any binary —
+	// reported handler_runnable: false. Not runnable is a warning, not a
+	// refusal: the operator may be installing ahead of putting the binary in
+	// place, and the hooks never block Claude when they fail.
+	handler := hooks.CheckHandler(exe)
+
 	result := HooksResult{
 		SettingsPath:      path,
+		SettingsSource:    source,
+		HandlerRunnable:   handler.Runnable,
+		HandlerProblem:    handler.Problem,
 		BinaryPathWarning: hooks.FragilePath(exe),
 		Changed:           changed,
 		Installed:         true,
@@ -226,7 +314,14 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 	return emit(stdout, *asJSON, result, func(w io.Writer) error {
 		// Printed whether or not anything changed: an installation that is
 		// already correct can still name a path that will not last.
+		// Both, unlike status, which reports only the more urgent. Status
+		// describes an installation that exists; install is the moment the
+		// path is chosen, and a binary about to be put in place can still be
+		// one that will not last.
 		warn := func() {
+			if result.HandlerProblem != "" {
+				fmt.Fprintf(w, "\nThe handler these hooks run cannot run.\n  %s\n", result.HandlerProblem)
+			}
 			if result.BinaryPathWarning != "" {
 				fmt.Fprintf(w, "\nThis path may not keep working.\n  %s\n", result.BinaryPathWarning)
 			}
@@ -257,18 +352,16 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 
 func runHooksUninstall(args []string, stdout io.Writer) error {
 	fs := flags("hooks uninstall")
-	settingsPath := fs.String("settings", "", "settings file to edit (default: ~/.claude/settings.json)")
+	settingsPath := fs.String("settings", "", "settings file to edit (default: $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
+	configDir := fs.String("config-dir", "", "Claude Code config directory whose settings.json to edit; excludes --settings")
 	asJSON := fs.Bool("json", false, "emit JSON for programmatic use")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 
-	path := *settingsPath
-	if path == "" {
-		var err error
-		if path, err = defaultSettingsPath(); err != nil {
-			return err
-		}
+	path, source, err := resolveSettingsPath(*settingsPath, *configDir)
+	if err != nil {
+		return err
 	}
 
 	settings, err := readSettings(path)
@@ -280,7 +373,7 @@ func runHooksUninstall(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	result := HooksResult{SettingsPath: path, Changed: changed, Note: restartNote}
+	result := HooksResult{SettingsPath: path, SettingsSource: source, Changed: changed, Note: restartNote}
 	if changed {
 		if result.BackupPath, err = writeSettings(path, settings); err != nil {
 			return err
@@ -303,18 +396,16 @@ func runHooksUninstall(args []string, stdout io.Writer) error {
 
 func runHooksStatus(args []string, stdout io.Writer) error {
 	fs := flags("hooks status")
-	settingsPath := fs.String("settings", "", "settings file to read (default: ~/.claude/settings.json)")
+	settingsPath := fs.String("settings", "", "settings file to read (default: $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
+	configDir := fs.String("config-dir", "", "Claude Code config directory whose settings.json to read; excludes --settings")
 	asJSON := fs.Bool("json", false, "emit JSON for programmatic use")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 
-	path := *settingsPath
-	if path == "" {
-		var err error
-		if path, err = defaultSettingsPath(); err != nil {
-			return err
-		}
+	path, source, err := resolveSettingsPath(*settingsPath, *configDir)
+	if err != nil {
+		return err
 	}
 
 	settings, err := readSettings(path)
@@ -326,6 +417,7 @@ func runHooksStatus(args []string, stdout io.Writer) error {
 
 	result := HooksResult{
 		SettingsPath:      path,
+		SettingsSource:    source,
 		BinaryPathWarning: hooks.FragilePath(st.BinaryPath),
 		Installed:         st.Installed,
 		Partial:           st.Partial,

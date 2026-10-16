@@ -400,11 +400,46 @@ birddog hooks status
 birddog hooks uninstall
 ```
 
-**Per-user setup.** Hooks live in `~/.claude/settings.json`, so everyone using
-birddog installs them on their own machine. Existing configuration is
-preserved: birddog appends its handler, leaves other hooks in place and in
-order, keeps a `.birddog-backup` of the previous file, and on uninstall
-removes exactly its own entries.
+All three take `--json`, and either `--config-dir DIR` or `--settings FILE`
+(not both — that is a usage error, exit 2). `install` also takes `--binary
+PATH` and `--dry-run`.
+
+**Per-user, per-profile setup.** Hooks live in the settings file of the Claude
+Code profile that runs the session, so everyone using birddog installs them on
+their own machine, once per profile. The file is chosen in this order:
+
+| Given | Settings file | `settings_source` |
+|---|---|---|
+| `--settings FILE` | `FILE` | `flag` |
+| `--config-dir DIR` | `DIR/settings.json` | `config_dir_flag` |
+| `CLAUDE_CONFIG_DIR` set and non-empty | `$CLAUDE_CONFIG_DIR/settings.json` | `CLAUDE_CONFIG_DIR` |
+| otherwise | `~/.claude/settings.json` | `default` |
+
+A leading `~` is expanded in each. A profile launched with its own
+`CLAUDE_CONFIG_DIR` never reads `~/.claude/settings.json`, so hooks installed
+there do nothing for it. To cover several profiles, install into each:
+
+```sh
+for p in arm armdev springthrough jacketlabs williams; do
+  birddog hooks install --config-dir ~/.claude-$p
+done
+```
+
+`birddog doctor` resolves the file the same way, so its `claude_hooks` entry
+describes the profile it was run under.
+
+Existing configuration is preserved: birddog appends its handler, leaves
+other hooks in place and in order, leaves every other key as it was (numbers
+included, written back exactly), keeps a `.birddog-backup` of the previous
+file, and on uninstall removes exactly its own entries. Running `install`
+again on a file that is already correct reports `changed: false` and writes
+nothing — no rewrite, no new backup.
+
+**`install` checks the handler can run** and reports it as
+`handler_runnable`, with `handler_problem` saying why when it cannot — a
+missing binary, a directory, a file that is not executable. It warns and
+installs anyway, since the binary may be about to be put in place; until it
+is, every hook fires and fails.
 
 **Sessions already running pick hooks up** — observed on Claude Code 2.1.267,
 within minutes and without restarting. A new session is still the sure way.
