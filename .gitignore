@@ -50,3 +50,6 @@ integration-findings.md
 
 # Claude Code worktrees made inside this checkout.
 .claude/worktrees/
+
+# Agent worktrees
+.claude/worktrees/
