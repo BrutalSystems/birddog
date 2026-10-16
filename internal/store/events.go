@@ -167,7 +167,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-	if _, err := db.Exec(schema + stateSchema + incidentSchema + deliverySchema + idempotencySchema); err != nil {
+	if _, err := db.Exec(schema + stateSchema + incidentSchema + deliverySchema + idempotencySchema + followSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialise store: %w", err)
 	}

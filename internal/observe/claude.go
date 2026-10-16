@@ -33,6 +33,19 @@ type Claude struct {
 	// decisions, so without hooks installed there is nothing to read and
 	// birddog says so rather than inferring.
 	HookState func(sessionID string) (hooks.State, error)
+
+	// seen remembers, per target, the process last observed answering for
+	// it. A target configured with only a session id still has a process
+	// behind it, and that process is what lets the target be followed when
+	// the session id changes underneath it. Touched only from the
+	// observation loop.
+	seen map[string]processIdentity
+}
+
+// processIdentity is a pid and the start time that makes it unambiguous.
+type processIdentity struct {
+	pid       int
+	procStart string
 }
 
 // NewClaude builds an observer over the real session registry and, where
@@ -78,11 +91,75 @@ func (c *Claude) Observe(target config.Target) (monitor.Sighting, error) {
 		if s.SessionID != target.Attachment.SessionID {
 			continue
 		}
+		if s.Live {
+			c.remember(target.ID, s)
+		}
 		sighting := c.sighting(s)
 		hookErr := c.enrich(&sighting, s)
 		return sighting, hookErr
 	}
+
+	if s, ok := c.successor(target, sessions); ok {
+		c.remember(target.ID, s)
+		sighting := c.sighting(s)
+		sighting.Follow = &monitor.Follow{
+			FromSessionID: target.Attachment.SessionID,
+			ToSessionID:   s.SessionID,
+			PID:           s.PID,
+			ProcStart:     s.ProcStart,
+			Via:           monitor.FollowViaProcess,
+		}
+		hookErr := c.enrich(&sighting, s)
+		return sighting, hookErr
+	}
 	return c.absent(target)
+}
+
+func (c *Claude) remember(targetID string, s claude.Session) {
+	if s.PID == 0 || s.ProcStart == "" {
+		return
+	}
+	if c.seen == nil {
+		c.seen = map[string]processIdentity{}
+	}
+	c.seen[targetID] = processIdentity{pid: s.PID, procStart: s.ProcStart}
+}
+
+// successor finds the session a target's process now reports, when the id
+// the target names has gone from the registry.
+//
+// Claude Code keeps one registry record per process and rewrites its session
+// id in place on /clear, so the conversation surface — the terminal, the pane,
+// the process an operator would focus — carries on under an id nobody
+// configured. Without this the target names an id that no longer exists while
+// the process it was watching is plainly still there, and reads as lost
+// forever.
+//
+// The link is the process identity, pid and start time together, and nothing
+// weaker. A pid alone is reused by the kernel; a terminal is reused by
+// whatever runs in it next. Both would follow a target onto a stranger. The
+// successor must also be live: a stale record proves only that something once
+// wrote it.
+//
+// A session resumed in a new process is a new process, and is not followed.
+func (c *Claude) successor(target config.Target, sessions []claude.Session) (claude.Session, bool) {
+	identity := processIdentity{pid: target.Attachment.PID, procStart: target.Attachment.ProcStart}
+	if identity.pid == 0 || identity.procStart == "" {
+		identity = c.seen[target.ID]
+	}
+	if identity.pid == 0 || identity.procStart == "" {
+		return claude.Session{}, false
+	}
+	for _, s := range sessions {
+		if s.PID != identity.pid || s.ProcStart != identity.procStart {
+			continue
+		}
+		if s.SessionID == "" || s.SessionID == target.Attachment.SessionID || !s.Live {
+			return claude.Session{}, false
+		}
+		return s, true
+	}
+	return claude.Session{}, false
 }
 
 // enrich adds what the hooks saw to what the registry said.

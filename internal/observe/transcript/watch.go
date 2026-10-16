@@ -61,7 +61,13 @@ func (w *Watcher) Observe(target config.Target) (monitor.Sighting, error) {
 	// Reason is deliberately not set anywhere below: it says why the
 	// observation is not a current, readable answer, and it is one — the
 	// registry answered. Only the enrichment failed.
-	path, locErr := Locate(w.ProjectsDirs, target.Attachment.SessionID)
+	// A sighting that followed the session to a new id describes that
+	// session, and its transcript is the one filed under the new id.
+	sessionID := target.Attachment.SessionID
+	if s.Follow != nil {
+		sessionID = s.Follow.ToSessionID
+	}
+	path, locErr := Locate(w.ProjectsDirs, sessionID)
 	if locErr != nil || path == "" {
 		s.InputRequestVisibility = policy.VisibilityUnavailable
 		return s, nil

@@ -465,6 +465,7 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	if err != nil {
 		return nil
 	}
+	owner := &ownerTrack{sessionID: sessionID}
 	return &daemon.Owner{
 		Description: sessionID,
 		Alive: func() bool {
@@ -475,14 +476,43 @@ func ownerWatch(sessionID string) *daemon.Owner {
 				// the watch; a genuine absence still reports three times.
 				return true
 			}
-			for _, s := range sessions {
-				if s.SessionID == sessionID {
-					return s.Live
-				}
-			}
-			return false
+			return owner.alive(sessions)
 		},
 	}
+}
+
+// ownerTrack follows the owning session the way a watched target is followed.
+//
+// An orchestrator that runs /clear gets a new session id in the same process.
+// Its instance was tied to the old id, and without this would reap itself
+// three passes later while the orchestrator it exists for is plainly still
+// there. The link is the process identity — pid and start time together —
+// learned from the passes that saw the owner, and nothing weaker.
+type ownerTrack struct {
+	sessionID string
+	pid       int
+	procStart string
+}
+
+func (o *ownerTrack) alive(sessions []claude.Session) bool {
+	for _, s := range sessions {
+		if s.SessionID == o.sessionID {
+			if s.Live && s.PID != 0 && s.ProcStart != "" {
+				o.pid, o.procStart = s.PID, s.ProcStart
+			}
+			return s.Live
+		}
+	}
+	if o.pid == 0 || o.procStart == "" {
+		return false
+	}
+	for _, s := range sessions {
+		if s.PID == o.pid && s.ProcStart == o.procStart && s.Live && s.SessionID != "" {
+			o.sessionID = s.SessionID
+			return true
+		}
+	}
+	return false
 }
 
 // checkOwnerExists refuses a start naming a session that is not there, rather

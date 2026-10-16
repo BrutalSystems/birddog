@@ -287,6 +287,24 @@ func Parse(data []byte) (*Config, error) {
 	return cfg, nil
 }
 
+// ParseTarget reads one target in the configuration file's format, with the
+// same defaults and the same validation a target inside a file gets.
+//
+// A target sent over the control channel as a config.Target loses every
+// threshold, because durations are not part of that encoding, and gets no
+// default alert list either: an added watch would alert on nothing, or report
+// quiet the moment it fell silent. Parsing the file format here is what makes
+// `watch add` mean what the same target means in a file.
+func ParseTarget(data []byte) (Target, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var tw targetWire
+	if err := dec.Decode(&tw); err != nil {
+		return Target{}, fmt.Errorf("target: %w", err)
+	}
+	return buildTarget(tw)
+}
+
 // ValidateTarget checks a target built in memory, so a watch added at runtime
 // is held to exactly the rules a configuration file is.
 func ValidateTarget(t Target) error {

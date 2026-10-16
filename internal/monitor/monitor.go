@@ -26,7 +26,35 @@ type Sighting struct {
 	// changes, the target is a new generation — not a continuation — so
 	// nothing observed of the old session can describe the new one.
 	SessionIdentity string
+
+	// Follow is set when the session the target names has gone and the same
+	// process now answers under a new session id. The monitor moves the
+	// target to the new id and records that it did, rather than reporting
+	// the old id as lost.
+	Follow *Follow
 }
+
+// Follow says a target's session continued under a new id.
+type Follow struct {
+	FromSessionID string
+	ToSessionID   string
+
+	// PID and ProcStart identify the process that carried on. They are the
+	// evidence for the follow: the same process is the same terminal and the
+	// same conversation surface, whatever id it now reports.
+	PID       int
+	ProcStart string
+
+	// Via names that evidence, so a consumer can tell how the link was made.
+	Via string
+}
+
+// FollowViaProcess: the new session id was reported by the same process,
+// identified by pid and start time, that the old one was.
+const FollowViaProcess = "process"
+
+// EventSessionFollowed is the event type recording a follow.
+const EventSessionFollowed = "session_followed"
 
 // Observer reads the current state of one target. It must never resume a
 // conversation, start a turn, or inject a prompt to find out.
@@ -71,6 +99,15 @@ type Monitor struct {
 	// floor is the moment the last detected wake happened. Passes after it
 	// measure durations from there rather than from before the sleep.
 	floor time.Time
+
+	// follows maps a target id and a session id it was configured with to
+	// the follow that replaced it. Loaded from the store once and kept
+	// current, so a target configured with an id that has since been
+	// followed is pointed at its successor on every pass — after a restart,
+	// after a sync from a file that still names the old id, after a watch is
+	// re-added.
+	follows       map[string]map[string]store.Follow
+	followsLoaded bool
 }
 
 // wakeThreshold is how far the wall and monotonic clocks may diverge before a
@@ -132,11 +169,21 @@ func (m *Monitor) Tick(now time.Time) error {
 	// Sighted first, decided second. A failure that hit every target at once
 	// says something about birddog's own view, and that has to be known
 	// before any conclusion is drawn from an individual target.
+	if err := m.loadFollows(); err != nil {
+		return err
+	}
+
 	sightings := make([]Sighting, len(m.cfg.Targets))
 	errs := make([]error, len(m.cfg.Targets))
 	learned := 0
-	for i, target := range m.cfg.Targets {
-		sightings[i], errs[i] = m.sight(target)
+	for i := range m.cfg.Targets {
+		m.ResolveFollows(&m.cfg.Targets[i])
+		sightings[i], errs[i] = m.sight(m.cfg.Targets[i])
+		if f := sightings[i].Follow; f != nil {
+			if err := m.follow(&m.cfg.Targets[i], sightings[i], *f, now); err != nil {
+				return err
+			}
+		}
 		if observedSomething(sightings[i]) {
 			learned++
 		}
@@ -160,6 +207,111 @@ func (m *Monitor) Tick(now time.Time) error {
 		if err := m.observeTarget(target, sightings[i], errs[i], correlated, now); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// loadFollows reads the recorded follows once, on the first pass.
+func (m *Monitor) loadFollows() error {
+	if m.followsLoaded {
+		return nil
+	}
+	recorded, err := m.store.Follows()
+	if err != nil {
+		return err
+	}
+	m.follows = map[string]map[string]store.Follow{}
+	for _, f := range recorded {
+		m.rememberFollow(f)
+	}
+	m.followsLoaded = true
+	return nil
+}
+
+func (m *Monitor) rememberFollow(f store.Follow) {
+	if m.follows[f.TargetID] == nil {
+		m.follows[f.TargetID] = map[string]store.Follow{}
+	}
+	m.follows[f.TargetID][f.FromSessionID] = f
+}
+
+// ResolveFollows points a target at the session its configured id has been
+// followed to, through as many follows as were recorded. It reports whether
+// it changed anything.
+//
+// Callers hold whatever guards the target; the daemon calls it under the
+// same lock as a pass. Before the first pass nothing has been loaded and it
+// changes nothing, which is right: the first pass loads and applies them.
+func (m *Monitor) ResolveFollows(t *config.Target) bool {
+	byFrom := m.follows[t.ID]
+	if len(byFrom) == 0 {
+		return false
+	}
+	changed := false
+	// Bounded by the number of recorded follows, so a cycle — A followed to
+	// B, and B later followed back to A — cannot loop.
+	for i := 0; i <= len(byFrom); i++ {
+		f, ok := byFrom[t.Attachment.SessionID]
+		if !ok || f.ToSessionID == t.Attachment.SessionID {
+			break
+		}
+		t.Attachment.SessionID = f.ToSessionID
+		if f.PID != 0 && f.ProcStart != "" {
+			t.Attachment.PID = f.PID
+			t.Attachment.ProcStart = f.ProcStart
+		}
+		changed = true
+	}
+	return changed
+}
+
+// follow moves a target to the session its process now answers as, and
+// records that it did.
+//
+// Recorded as its own event, ahead of the observation of the new session, so
+// a consumer reading the feed sees the move before it sees the new id and is
+// never left to infer that a session it was told about vanished.
+func (m *Monitor) follow(t *config.Target, s Sighting, f Follow, now time.Time) error {
+	evidence, err := json.Marshal(map[string]any{
+		"from_session_id": f.FromSessionID,
+		"to_session_id":   f.ToSessionID,
+		"pid":             f.PID,
+		"proc_start":      f.ProcStart,
+		"via":             f.Via,
+	})
+	if err != nil {
+		return fmt.Errorf("encode follow: %w", err)
+	}
+
+	prior, hadPrior, err := m.store.TargetState(t.ID)
+	if err != nil {
+		return err
+	}
+
+	record := store.Follow{
+		TargetID: t.ID, FromSessionID: f.FromSessionID, ToSessionID: f.ToSessionID,
+		PID: f.PID, ProcStart: f.ProcStart, At: now,
+	}
+	if _, err := m.store.RecordFollow(record, store.Event{
+		InstanceID: m.instanceID,
+		TargetID:   t.ID,
+		Type:       EventSessionFollowed,
+		Source:     t.Provider,
+		At:         now,
+		SessionID:  s.SessionIdentity,
+		Generation: generationFor(prior, hadPrior, s.SessionIdentity),
+		ConfigRev:  m.configRev,
+		Machine:    m.machine,
+		Evidence:   evidence,
+	}); err != nil {
+		return err
+	}
+	m.rememberFollow(record)
+
+	t.Attachment.SessionID = f.ToSessionID
+	if f.PID != 0 && f.ProcStart != "" {
+		t.Attachment.PID = f.PID
+		t.Attachment.ProcStart = f.ProcStart
 	}
 	return nil
 }

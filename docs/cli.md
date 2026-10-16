@@ -138,6 +138,41 @@ staleness check, match nothing, and return an empty page: a consumer would be
 told there is nothing new, which is indistinguishable from every watched
 session having gone quiet.
 
+### When a session changes id
+
+Claude Code mints a new session id on `/clear` without restarting: the same
+process, in the same terminal, carries on under an id nobody configured.
+birddog follows it. When the id a target names has gone from the registry and
+the **same process** — pid and start time together — now reports a different
+live session, the target moves to the new id and the feed records a
+`session_followed` event before the first observation of the new session:
+
+```json
+{"type": "session_followed", "target_id": "worker-1", "session_id": "22222222-…@Fri Oct 16 23:49:32 2026",
+ "evidence": {"from_session_id": "11111111-…", "to_session_id": "22222222-…",
+              "pid": 41207, "proc_start": "Fri Oct 16 23:49:32 2026", "via": "process"}}
+```
+
+It is not an exit and opens nothing. The new session is a new generation, so
+anything still open about the old one is closed out, exactly as for a session
+replaced at the same target id. `status` reports the id being followed.
+
+The process identity comes from the target's `pid` and `proc_start` when the
+attachment names them, and otherwise from the passes that saw the session
+before its id changed. Nothing weaker is used: a pid alone is reused by the
+kernel, and a terminal is reused by whatever runs in it next — either would
+follow a target onto a stranger. A session resumed in a **new process** is a
+new process and is not followed.
+
+The configuration file is not rewritten. Follows are recorded in the
+instance's store and replayed, so a resumed instance, or a `watch sync` from a
+file that still names the original id, lands on the session the target had
+been following rather than on an id that no longer exists.
+
+`--owner` follows the owning session the same way, so an orchestrator that
+runs `/clear` keeps its instance. That link is learned from the passes that saw
+the owner, so it holds for the life of the instance process.
+
 ### Machine identity
 
 A cursor is a position in one store on one machine. `store` says which history;
