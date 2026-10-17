@@ -4,27 +4,32 @@
 #
 # This repository is public: everything pushed to it, commit messages
 # included, can be read by anyone. This script greps what is about to leave
-# the machine — the lines a push adds, its commit messages and its ref names —
-# for two kinds of pattern:
+# the machine — the lines a push adds, the paths it touches, its commit
+# messages, tag messages and ref names — for two kinds of pattern:
 #
 #   * generic ones shipped here: home-directory paths, email addresses, and
 #     the shapes of common API tokens and private keys;
 #   * a private list of terms kept outside every repository, one
 #     case-insensitive extended regex per line ('#' starts a comment). It is
 #     read from $PUBLIC_TERMS_FILE, else `git config public.termsFile`, else
-#     ~/.config/public-terms.txt. A missing list is reported, not an error.
+#     ~/.config/public-terms.txt. A missing or unreadable list refuses the
+#     check; set PUBLIC_TERMS_FILE=none to check the generic patterns only.
 #
-# Any hit exits 1 and prints where it was found.
+# Any hit exits 1 and prints where it was found. Anything the script cannot
+# read or verify — a git error, a shallow clone, a pattern grep rejects —
+# exits 2. It never reports clean on a check it could not finish.
 #
 # Usage:
 #   scripts/check-public.sh                 check origin/main..HEAD
 #   scripts/check-public.sh <range>         check a revision range
 #   scripts/check-public.sh --tree          check every tracked file as it is now
-#   scripts/check-public.sh --pre-push      read refs from stdin, as git's
+#   scripts/check-public.sh --pre-push <remote> [<url>]
+#                                           read refs from stdin, as git's
 #                                           pre-push hook does
 #
 # `make hooks` installs it as the pre-push hook. System grep is used rather
 # than `git grep`: macOS git grep ignores \b, which the term list relies on.
+# Binary files are not inspected.
 
 set -eu
 
@@ -33,100 +38,162 @@ GREP=/usr/bin/grep
 [ -x "$GREP" ] || GREP=$(command -v grep)
 
 # Generic patterns: case-sensitive ERE. Placeholder home directories and
-# example.com addresses are excluded so tests and docs can still use them.
+# example.com addresses are blanked out before matching, match by match, so
+# tests and docs can still use them beside nothing else.
 # Token prefixes are written with a bracket so this file passes its own check.
 GENERIC='(/Users|/home)/[A-Za-z0-9._-]+/'
 GENERIC_ALLOW='(/Users|/home)/(x|u|me|you|user|someone|a-user[A-Za-z0-9-]*|runner|USER|<[^>]*>)/'
 EMAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
-EMAIL_ALLOW='noreply|@example\.(com|org|net)|@users\.noreply\.github\.com'
+EMAIL_ALLOW='[A-Za-z0-9._%+-]*noreply@[A-Za-z0-9.-]+|[A-Za-z0-9._%+-]+@example\.(com|org|net)'
 TOKENS='AKI[A][0-9A-Z]{16}|gh[p]_[A-Za-z0-9]{20,}|gh[o]_[A-Za-z0-9]{20,}|github[_]pat_[A-Za-z0-9_]{20,}|np[m]_[A-Za-z0-9]{30,}|sk[-]ant-[A-Za-z0-9_-]{10,}|xo[x][abp]-[A-Za-z0-9-]{10,}|BEGI[N] [A-Z ]*PRIVATE KEY'
+
+fail() {
+	echo "check-public: $* — refusing" >&2
+	exit 2
+}
+
+work=$(mktemp -d) || fail "cannot make a temporary directory"
+trap 'rm -rf "$work"' EXIT
+text=$work/text
+: >"$text"
+
+# --- the private term list -------------------------------------------------
 
 terms_file=${PUBLIC_TERMS_FILE:-$(git config --get public.termsFile 2>/dev/null || true)}
 terms_file=${terms_file:-$HOME/.config/public-terms.txt}
 case $terms_file in "~/"*) terms_file=$HOME/${terms_file#"~/"} ;; esac
-
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
-: >"$work/text"
-
-if [ -r "$terms_file" ]; then
-	"$GREP" -vE '^[[:space:]]*(#|$)' "$terms_file" >"$work/terms" || true
-else
-	echo "check-public: no private term list at $terms_file — checking generic patterns only" >&2
-	: >"$work/terms"
+: >"$work/terms"
+if [ "$terms_file" != none ]; then
+	[ -r "$terms_file" ] || fail "no readable term list at $terms_file (PUBLIC_TERMS_FILE=none checks generic patterns only)"
+	rc=0
+	"$GREP" -vE '^[[:space:]]*(#|$)' "$terms_file" >"$work/terms" || rc=$?
+	[ "$rc" -le 1 ] || fail "cannot read $terms_file"
 fi
 
-# collect <label> appends labelled lines from stdin to the text under check.
-collect() {
-	sed "s|^|$1: |" >>"$work/text"
+# --- collecting what would be published ------------------------------------
+
+# git_to <file> <git args...> runs git with its output in a file, so a git
+# failure is seen rather than hidden at the head of a pipeline.
+git_to() {
+	out=$1
+	shift
+	git "$@" >"$out" || fail "git $* failed"
 }
 
-# range <rev-range> adds what that range would publish.
-range() {
-	git log --format='%H%n%B' "$@" | collect "message"
-	git log -p --format='commit %H' --no-color "$@" |
-		awk '/^commit [0-9a-f]+$/ { c = substr($2, 1, 12); next }
-		     /^\+\+\+ / { f = substr($0, 7); next }
-		     /^\+/ { print c " " f ": " substr($0, 2) }' |
-		collect "added"
+# label <label> <file> appends the file's lines to the text under check.
+label() {
+	sed "s|^|$1: |" "$2" >>"$text"
 }
 
-zero=0000000000000000000000000000000000000000
+# commits <rev-list args...> adds what those commits publish: each message,
+# and for each commit the paths and added lines of its diff against its first
+# parent (all of a root commit; a merge shows what it brings to the branch).
+commits() {
+	git_to "$work/revs" rev-list "$@"
+	while IFS= read -r c; do
+		git_to "$work/msg" log -1 --format=%B "$c"
+		label "message ${c%"${c#????????????}"}" "$work/msg"
+		git_to "$work/diff" -c core.quotepath=off show --no-ext-diff --no-textconv \
+			--diff-merges=first-parent --format= --no-color --src-prefix=a/ --dst-prefix=b/ "$c"
+		awk -v c="${c%"${c#????????????}"}" '
+			/^diff --git / { hdr = 1; f = $0; print c " path: " substr($0, 12); next }
+			hdr && /^(rename|copy) (from|to) / { print c " path: " $0; next }
+			hdr && /^\+\+\+ / { f = substr($0, 7); next }
+			/^@@/ { hdr = 0; next }
+			!hdr && /^\+/ { print c " " f ": " substr($0, 2) }
+		' "$work/diff" >"$work/added" || fail "cannot parse the diff of $c"
+		label "added" "$work/added"
+	done <"$work/revs"
+}
+
+# tag <object> adds an annotated tag's message, following tags of tags, and
+# the commits the tag finally points at.
+tag() {
+	obj=$1
+	while [ "$(git cat-file -t "$obj")" = tag ]; do
+		git_to "$work/tag" cat-file tag "$obj"
+		label "tag" "$work/tag"
+		obj=$(sed -n '1s/^object //p' "$work/tag")
+	done
+	echo "$obj"
+}
+
+is_zero() {
+	case $1 in *[!0]*) return 1 ;; *) return 0 ;; esac
+}
+
+[ "$(git rev-parse --is-shallow-repository)" = false ] ||
+	fail "this clone is shallow, so the history a push publishes cannot all be read"
 
 case ${1:-} in
 --pre-push)
+	remote=${2:-}
+	[ -n "$remote" ] || fail "--pre-push needs the remote name git passes the hook"
 	while read -r local_ref local_sha remote_ref remote_sha; do
-		[ "$local_sha" = "$zero" ] && continue # a delete publishes nothing
-		echo "$remote_ref" | collect "ref"
-		if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha" 2>/dev/null; then
-			range "$local_sha" --not --remotes
-		else
-			range "$remote_sha..$local_sha"
+		is_zero "$local_sha" && continue # a delete publishes nothing
+		printf '%s\n%s\n' "$remote_ref" "$local_ref" >"$work/ref"
+		label "ref" "$work/ref"
+		type=$(git cat-file -t "$local_sha") || fail "cannot read $local_sha"
+		target=$local_sha
+		if [ "$type" = tag ]; then
+			target=$(tag "$local_sha")
+			type=$(git cat-file -t "$target") || fail "cannot read $target"
 		fi
-		case $local_ref in refs/tags/*)
-			git cat-file -p "$local_sha" 2>/dev/null | collect "tag" ;;
-		esac
+		[ "$type" = commit ] || fail "$remote_ref points at a $type, which this check cannot inspect"
+		# What the remote already has needs no checking: its old value for
+		# this ref, and what its remote-tracking refs say it holds. Only refs
+		# of this remote count — another remote's history is not on it.
+		if ! is_zero "$remote_sha" && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+			commits "$target" "^$remote_sha" --not --remotes="$remote"
+		else
+			commits "$target" --not --remotes="$remote"
+		fi
 	done
 	;;
 --tree)
-	git ls-files -z | xargs -0 "$GREP" -nIH '' 2>/dev/null | collect "tree" || true
+	git_to "$work/files" ls-files -z
+	if [ -s "$work/files" ]; then
+		rc=0
+		xargs -0 "$GREP" -nIH '' <"$work/files" >"$work/tree" || rc=$?
+		# grep exits 1 when a file is empty or binary; xargs reports that as 123.
+		[ "$rc" -eq 0 ] || [ "$rc" -eq 123 ] || fail "cannot read the tracked files"
+		label "tree" "$work/tree"
+	fi
 	;;
 "")
-	range origin/main..HEAD
+	commits origin/main..HEAD
 	;;
 *)
-	range "$1"
+	commits "$1"
 	;;
 esac
+
+# --- matching ----------------------------------------------------------------
 
 hits=$work/hits
 : >"$hits"
 
-# match <grep args...> appends matching lines to $hits. grep exits 1 for no
-# match and 2 for an error — a pattern it cannot compile must stop the push,
-# not pass it as clean.
+# match <file> <grep args...> appends the file's matching lines to $hits.
+# grep exits 1 for no match and 2 for an error — a pattern it cannot compile
+# must stop the push, not pass it as clean.
 match() {
+	in=$1
+	shift
 	rc=0
-	"$GREP" "$@" "$work/text" >"$work/m" || rc=$?
-	if [ "$rc" -gt 1 ]; then
-		echo "check-public: grep failed on a pattern (exit $rc) — fix the pattern; refusing" >&2
-		exit 2
-	fi
-	cat "$work/m" >>"$work/raw"
+	"$GREP" "$@" "$in" >>"$hits" || rc=$?
+	[ "$rc" -le 1 ] || fail "grep failed on a pattern (exit $rc)"
 }
 
-: >"$work/raw"
-match -E "$GENERIC"
-"$GREP" -vE "$GENERIC_ALLOW" "$work/raw" >>"$hits" || true
-: >"$work/raw"
-match -E "$EMAIL"
-"$GREP" -vE "$EMAIL_ALLOW" "$work/raw" >>"$hits" || true
-: >"$work/raw"
-match -E "$TOKENS"
+# Allowed placeholders are blanked one match at a time, so a placeholder on a
+# line does not excuse a real path or address beside it.
+sed -E "s#$GENERIC_ALLOW#<placeholder>/#g; s#$EMAIL_ALLOW#<placeholder>#g" "$text" >"$work/generic" ||
+	fail "cannot blank placeholders"
+match "$work/generic" -E "$GENERIC"
+match "$work/generic" -E "$EMAIL"
+match "$text" -E "$TOKENS"
 if [ -s "$work/terms" ]; then
-	match -iE -f "$work/terms"
+	match "$text" -iE -f "$work/terms"
 fi
-cat "$work/raw" >>"$hits"
 
 if [ -s "$hits" ]; then
 	echo "check-public: refusing — these lines would be published:" >&2
