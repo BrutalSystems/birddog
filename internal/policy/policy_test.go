@@ -622,3 +622,70 @@ func TestNoProgressStillOpensOnARealStaleTimestamp(t *testing.T) {
 		t.Errorf("no_progress did not open on a three-hour-stale timestamp; open=%v", d.Open)
 	}
 }
+
+func withDeadline(at time.Time) config.Policy {
+	p := alerting()
+	p.AlertOn = append(p.AlertOn, config.ConditionOverdue)
+	p.Deadline = &at
+	return p
+}
+
+func TestOverdueOpensOnlyOnceTheDeadlinePasses(t *testing.T) {
+	p := withDeadline(base.Add(time.Hour))
+
+	if d := Evaluate(active(base), p, base.Add(59*time.Minute)); opened(d, config.ConditionOverdue) {
+		t.Errorf("overdue opened a minute before the deadline")
+	}
+	if d := Evaluate(active(base), p, base.Add(time.Hour)); !opened(d, config.ConditionOverdue) {
+		t.Errorf("Open = %v at the deadline, want overdue", d.Open)
+	}
+}
+
+// Busy past the estimate is the case overdue is for, and the one quiet and
+// no_progress are built not to report.
+func TestOverdueOpensForASessionStillWorking(t *testing.T) {
+	obs := active(base.Add(2 * time.Hour))
+	d := Evaluate(obs, withDeadline(base.Add(time.Hour)), base.Add(2*time.Hour))
+	if !opened(d, config.ConditionOverdue) {
+		t.Errorf("Open = %v, want overdue for a working session past its deadline", d.Open)
+	}
+}
+
+func TestOverdueIsNotRaisedForAnExitedTarget(t *testing.T) {
+	obs := active(base)
+	obs.Status, obs.Live = StatusExited, false
+
+	d := Evaluate(obs, withDeadline(base.Add(time.Minute)), base.Add(time.Hour))
+	if opened(d, config.ConditionOverdue) {
+		t.Errorf("overdue opened for a target that exited")
+	}
+	if !slices.Contains(d.Close, config.ConditionOverdue) {
+		t.Errorf("Close = %v, want overdue resolved by the exit", d.Close)
+	}
+}
+
+func TestOverdueNeedsADeadline(t *testing.T) {
+	p := alerting()
+	p.AlertOn = append(p.AlertOn, config.ConditionOverdue)
+	if d := Evaluate(active(base), p, base.Add(1000*time.Hour)); opened(d, config.ConditionOverdue) {
+		t.Errorf("overdue opened with no deadline set")
+	}
+}
+
+// Expected quiet is about silence; a deadline is about time.
+func TestExpectedQuietDoesNotSuppressOverdue(t *testing.T) {
+	p := withDeadline(base.Add(time.Minute))
+	until := base.Add(10 * time.Hour)
+	p.ExpectedQuietUntil = &until
+	if d := Evaluate(active(base), p, base.Add(time.Hour)); !opened(d, config.ConditionOverdue) {
+		t.Errorf("Open = %v, want overdue despite an expected-quiet override", d.Open)
+	}
+}
+
+func TestOverdueDoesNotNeedContact(t *testing.T) {
+	obs := active(base)
+	obs.Live, obs.StatusKnown = false, false
+	if d := Evaluate(obs, withDeadline(base.Add(time.Minute)), base.Add(time.Hour)); !opened(d, config.ConditionOverdue) {
+		t.Errorf("Open = %v, want overdue for an unreachable target that has not been seen to exit", d.Open)
+	}
+}

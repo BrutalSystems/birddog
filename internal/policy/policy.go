@@ -244,6 +244,11 @@ type Observation struct {
 	// decoration.
 	Reason string
 
+	// ExitRecorded says a verified exit is already the recorded state of
+	// this run. A pass that cannot see the session does not undo it: the
+	// session is still gone, and a deadline passing afterwards is not news.
+	ExitRecorded bool
+
 	// ThresholdFloor is the earliest moment durations may be measured from.
 	// The monitor sets it after the machine wakes, so quiet and idle restart
 	// at the wake instead of firing about hours nobody was watching.
@@ -340,6 +345,19 @@ func Evaluate(obs Observation, p config.Policy, now time.Time) Decision {
 	quiet := inContact && !exited && !silenceExplained &&
 		now.After(laterOf(obs.LastActivityAt, from).Add(p.QuietAfter))
 	set(&d, p, config.ConditionQuiet, quiet && !quietSuppressed)
+
+	// Overdue is a wall-clock fact about the target, not an observation of
+	// it, so it needs no contact and is not floored by a wake: a deadline
+	// that passed while the machine slept has still passed. Only a verified
+	// exit answers it. An expected-quiet override does not suppress it —
+	// that override is about silence, and overdue is about time.
+	//
+	// An exit recorded earlier in this run counts too. Without it a session
+	// that exited before its deadline, and whose record then became
+	// unreadable, would be reported overdue — and again each time the exit
+	// was re-observed and lost.
+	overdue := !exited && !obs.ExitRecorded && p.Deadline != nil && !now.Before(*p.Deadline)
+	set(&d, p, config.ConditionOverdue, overdue)
 
 	return d
 }

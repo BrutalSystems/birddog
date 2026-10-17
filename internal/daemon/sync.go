@@ -160,6 +160,10 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 	for _, t := range cfg.Targets {
 		cur, ok := current[t.ID]
 		if !ok {
+			t.Policy = config.ResolveDeadline(t.Policy, now)
+			if !dryRun {
+				d.addedAt[t.ID] = now
+			}
 			result.Added = append(result.Added, t.ID)
 			next = append(next, t)
 			continue
@@ -167,6 +171,11 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		delete(current, t.ID)
 
 		t.Policy = keepRuntimeOverride(t.Policy, cur.Policy, now)
+		added, ok := d.addedAt[t.ID]
+		if !ok {
+			added = now
+		}
+		t.Policy = keepDeadline(t.Policy, cur.Policy, added)
 		// A file naming an id the target has since been followed away from
 		// means the session being followed, so it is unchanged. The file's
 		// own target is what is kept when it differs: the next pass decides
@@ -217,6 +226,14 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		d.monitor.Forget(id)
 	}
 	d.opts.Config.Targets = next
+	for _, id := range result.Removed {
+		delete(d.addedAt, id)
+	}
+	for _, t := range next {
+		if err := d.resolveUnaskedOverdue(t); err != nil {
+			return WatchSyncResult{}, err
+		}
+	}
 	d.opts.Config.Retention = cfg.Retention
 	d.opts.Config.FollowFile = cfg.FollowFile
 	result.WatchResult = d.bumpRevision()
@@ -241,6 +258,39 @@ func keepRuntimeOverride(fromFile, current config.Policy, now time.Time) config.
 	fromFile.ExpectedQuietUntil = current.ExpectedQuietUntil
 	fromFile.ExpectedQuietReason = current.ExpectedQuietReason
 	return fromFile
+}
+
+// keepDeadline decides a re-synced target's deadline from what the file says
+// and what is in force.
+//
+// While the file's deadline is what it was, the deadline in force is kept:
+// a relative one keeps the time it was resolved to, so syncing the same file
+// again does not push it back, and one moved or cleared by `watch update`
+// stays moved or cleared, for the reason keepRuntimeOverride gives — whoever
+// set it knew something the file does not record. A file that changes its
+// deadline wins, and a relative one it introduces or changes runs from when
+// the instance took the target on, not from the sync.
+func keepDeadline(fromFile, current config.Policy, addedAt time.Time) config.Policy {
+	sameAsFile := fromFile.DeadlineAfter == current.DeadlineAfter &&
+		equalTime(fromFile.FileDeadline, current.FileDeadline)
+	if !sameAsFile {
+		return config.ResolveDeadline(fromFile, addedAt)
+	}
+	if current.DeadlineByUpdate && current.Deadline != nil && !fromFile.AlertsOn(config.ConditionOverdue) {
+		// The file has since narrowed alert_on past overdue; the update's
+		// deadline could no longer alert, so it is not carried.
+		return fromFile
+	}
+	fromFile.Deadline = current.Deadline
+	fromFile.DeadlineByUpdate = current.DeadlineByUpdate
+	return fromFile
+}
+
+func equalTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 // followFile re-reads the instance's configuration file when it has changed,

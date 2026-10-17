@@ -63,12 +63,15 @@ A hand-started opencode TUI never appears: opencode is observable only with the
      without them birddog cannot tell a finished session from one it cannot
      see. Codex takes the thread id as `session_id` only.
    - `provider` is `claude`, `codex`, `opencode` or `process`.
-   - Defaults: `alert_on` = the four above, `quiet_after_seconds` 300,
+   - Defaults: `alert_on` = the four above plus `overdue`, `quiet_after_seconds` 300,
      `idle_grace_seconds` 30. `idle` is opt-in and noisy (every Claude Code
      turn ends idle).
    - `no_progress` needs **both** the name in `alert_on` and
      `no_progress_after_seconds`; there is no default. Without hooks it
      measures turn length, not silence — set it above the longest turn.
+   - `"deadline": "<RFC3339>"` or `"deadline_after_seconds": N` (from when
+     the instance took the target on): past it, a target that has not exited
+     raises **one** `overdue` alert, busy or not. Exit resolves it.
    - `"observations": {"transcript": true}` lets a Claude Code target detect a
      question asked in plain prose (which otherwise looks idle).
    - Optional `notification`: `{"kind": "claude-inbox", "options":
@@ -118,7 +121,8 @@ A hand-started opencode TUI never appears: opencode is observable only with the
 5. **Adjust without restarting**: `birddog watch add --instance <id> --file
    target.json`, `watch remove --target worker-1`, `watch update --target
    worker-1 --expect-quiet-for 20m --reason "test suite"` (silences quiet/idle
-   only; exit, input and loss still surface). If the watch list lives in a
+   only; exit, input and loss still surface), `watch update --target worker-1
+   --deadline 45m` (or an RFC3339 time; `--clear-deadline` removes it). If the watch list lives in a
    file, edit the file and run `birddog watch sync --instance <id>` (or
    `--file other.json`; `--dry-run` first): it adds, removes and updates to
    match, leaving unchanged targets' history alone. `"follow_file": true` in
