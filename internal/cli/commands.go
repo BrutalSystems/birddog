@@ -67,21 +67,22 @@ func runDiscover(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	registry := *registryDir
-	if registry == "" {
-		var err error
-		if registry, err = claude.DefaultRegistryDir(); err != nil {
-			return err
-		}
+	params := claude.Params{RegistryDir: *registryDir}
+	if *registryDir == "" {
+		params.Registries = claude.Registries
 	}
 
-	claudeSessions, err := claude.List(claude.Params{RegistryDir: registry})
-	if err != nil {
+	claudeSessions, err := claude.List(params)
+	switch {
+	case err == nil:
+	case claude.IsPartial(err):
+		// What could be read is listed. discover shows what is there; it
+		// does not conclude anything from what is not.
+	case errors.Is(err, iofs.ErrNotExist):
 		// No registry directory means no sessions, which is an answer.
-		if !errors.Is(err, iofs.ErrNotExist) {
-			return err
-		}
 		claudeSessions = nil
+	default:
+		return err
 	}
 	rows := FromClaude(claudeSessions)
 
@@ -414,6 +415,7 @@ func serveInstance(id, configPath string, cfg *config.Config, owner string, out 
 		Observers:   observers,
 		Notifier:    notifier,
 		Locate:      where.Default().Resolve,
+		Registries:  claude.Registries,
 	})
 	if err != nil {
 		return err
@@ -465,22 +467,23 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	if sessionID == "" {
 		return nil
 	}
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return nil
-	}
+	return ownerWatchIn(sessionID, claude.Params{Registries: claude.Registries})
+}
+
+// ownerWatchIn is ownerWatch over the registries where says.
+func ownerWatchIn(sessionID string, where claude.Params) *daemon.Owner {
 	owner := &ownerTrack{claude.Tracker{SessionID: sessionID}}
 	return &daemon.Owner{
 		Description: sessionID,
 		Alive: func() bool {
-			sessions, err := claude.List(claude.Params{RegistryDir: registryDir})
-			if err != nil {
+			sessions, err := claude.List(where)
+			if err != nil && !claude.IsPartial(err) {
 				// Unreadable registry is not evidence the owner has gone.
 				// Saying it is alive keeps a transient failure from ending
 				// the watch; a genuine absence still reports three times.
 				return true
 			}
-			return owner.alive(sessions)
+			return owner.alive(sessions, err != nil)
 		},
 	}
 }
@@ -493,26 +496,34 @@ func ownerWatch(sessionID string) *daemon.Owner {
 // there.
 type ownerTrack struct{ claude.Tracker }
 
-func (o *ownerTrack) alive(sessions []claude.Session) bool {
-	s, ok := o.Find(sessions)
-	return ok && s.Live
+// alive reports whether the owner is there. Not found in a listing that is
+// incomplete is not evidence it has gone: the owner may be in the registry
+// that could not be read, and three such passes would otherwise reap an
+// instance whose owner is running.
+func (o *ownerTrack) alive(sessions []claude.Session, partial bool) bool {
+	if s, ok := o.Find(sessions); ok {
+		return s.Live
+	}
+	return partial
 }
 
 // checkOwnerExists refuses a start naming a session that is not there, rather
 // than starting an instance that reaps itself moments later.
 func checkOwnerExists(sessionID string) error {
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return err
-	}
-	sessions, err := claude.List(claude.Params{RegistryDir: registryDir})
-	if err != nil {
+	sessions, err := claude.List(claude.Params{Registries: claude.Registries})
+	if err != nil && !claude.IsPartial(err) {
 		return fmt.Errorf("check owner session: %w", err)
 	}
 	for _, s := range sessions {
 		if s.SessionID == sessionID {
 			return nil
 		}
+	}
+	if err != nil {
+		// Refused all the same — an owner that cannot be confirmed would be
+		// counted absent from the start — but the message says it may be
+		// there, in the registry that could not be read.
+		return fmt.Errorf("Claude Code session %q to own this instance was not found, and the listing was incomplete: %w", sessionID, err)
 	}
 	return fmt.Errorf("no Claude Code session %q to own this instance; `birddog discover` lists them", sessionID)
 }
@@ -541,10 +552,6 @@ func opencodePluginLog(recordsDir string) string {
 }
 
 func buildObservers() (map[string]monitor.Observer, error) {
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return nil, err
-	}
 	lockDir, err := codex.DefaultLockDir()
 	if err != nil {
 		return nil, err
@@ -554,11 +561,11 @@ func buildObservers() (map[string]monitor.Observer, error) {
 		return nil, err
 	}
 	return observe.Build(observe.Deps{
-		ClaudeRegistryDir: registryDir,
-		HookStateDir:      hookStateDir(),
-		CodexLockDir:      lockDir,
-		OpencodeRecords:   opencodeRecordsDir(),
-		ProjectsDirs:      transcript.DefaultProjectsDirs(home),
+		ClaudeRegistries: claude.Registries,
+		HookStateDir:     hookStateDir(),
+		CodexLockDir:     lockDir,
+		OpencodeRecords:  opencodeRecordsDir(),
+		ProjectsDirs:     transcript.DefaultProjectsDirs(home),
 	})
 }
 

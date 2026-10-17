@@ -42,6 +42,12 @@ type StatusResult struct {
 	// ConfigSync is the instance's own configuration file and how the last
 	// sync from it went. Absent for an instance with no file.
 	ConfigSync *ConfigSyncView `json:"config_sync,omitempty"`
+
+	// ClaudeRegistries is every Claude Code session registry this instance
+	// reads, as it works them out now — from the environment it was started
+	// with, which is the only one it has. It is how to check that a profile
+	// list set after the instance started has reached it.
+	ClaudeRegistries []string `json:"claude_registries,omitempty"`
 }
 
 // TargetStatus is what is known about one watched session.

@@ -19,6 +19,52 @@ docs-pass     claude    idle         41377  Ghostty ttys002                     
 auth-thread   codex     unavailable  41880  ttys009                             01a0c46d-…    /work/auth
 ```
 
+**Which registries.** Claude Code records a session under
+`$CLAUDE_CONFIG_DIR/sessions`, so each profile's sessions are in that
+profile's directory. birddog reads:
+
+1. `~/.claude/sessions`, always — whether or not it exists yet;
+2. `$CLAUDE_CONFIG_DIR/sessions`, when that is set in birddog's environment;
+3. `<dir>/sessions` for each profile directory in `BIRDDOG_CLAUDE_CONFIG_DIRS`,
+   a `:`-separated list (`~/` is expanded):
+
+```sh
+export BIRDDOG_CLAUDE_CONFIG_DIRS=~/.claude-arm:~/.claude-armdev:~/.claude-springthrough:~/.claude-jacketlabs:~/.claude-williams
+```
+
+Which directories are profiles is stated rather than guessed: a pattern such as
+`~/.claude*` also matches backups and copies, and a copied registry would be
+read as live sessions. A profile directory, or a registry, reached through a
+symbolic link is skipped. The list is worked out again on every listing, so a
+registry created after an instance started — a profile first used later — is
+read from then on. A running instance, `--owner` and the `claude-inbox` route
+read the same set, from the environment the instance was started with — and
+only that one: setting `BIRDDOG_CLAUDE_CONFIG_DIRS` afterwards changes nothing
+for an instance already running. `status --json` reports the list an instance
+actually reads as `claude_registries`.
+
+One process is one session. A process recorded in more than one registry is
+identified by pid and start time together; the live record is kept, then one
+that is not a link, then the newest. A record reached through a link belongs
+to the directory it actually lives in, which is where its credential file is.
+
+A registry that exists and cannot be read — or a record in one that cannot be
+read or does not parse — makes the listing **partial**. A record is skipped
+without saying so only on evidence that its session is over: its directory
+entry is gone (the session ended while the directory was being read), or it is
+a link to a missing record whose `<pid>.json` name gives a pid no process
+holds. A link to a missing record for a pid that **is** running — a renamed or
+unmounted directory, say — makes the listing partial, since the session may be
+running behind it. When a listing is
+partial, what was read is used, and a session missing from it is not
+concluded gone — an owner is not counted absent, a target reports
+`source_unreadable` rather than an exit, and a `claude-inbox` delivery is
+retried rather than given up as having no recipient. `claude-inbox` chooses
+between records with real liveness: a record at the orchestrator's process
+that does not answer is not followed to. A registry that does not exist simply holds no sessions.
+
+`--registry-dir DIR` narrows `discover` to that one directory.
+
 A session is listed as live only on evidence — for Claude Code, its socket
 answers *and* the process at its pid is the one the registry recorded; for
 Codex, a running process holds the thread's writer lock. Where the evidence

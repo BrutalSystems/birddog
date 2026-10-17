@@ -427,3 +427,18 @@ func TestStatusCarriesWhyATargetHasNeverBeenObserved(t *testing.T) {
 		t.Errorf("target = status %q current %v observed %v, want nothing invented", ts.Status, ts.StatusIsCurrent, ts.ObservedAt)
 	}
 }
+
+// status says which Claude Code registries the instance reads, so a profile
+// list can be checked against the instance rather than against a shell.
+func TestStatusReportsTheRegistriesRead(t *testing.T) {
+	_, opts := startWith(t, &spyObserver{status: policy.StatusActive, live: true}, func(o *Options) {
+		o.Registries = func() []string { return []string{"/h/.claude/sessions", "/h/.claude-work/sessions"} }
+	})
+	var st StatusResult
+	if err := callStatus(opts.SocketPath, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.ClaudeRegistries) != 2 || st.ClaudeRegistries[1] != "/h/.claude-work/sessions" {
+		t.Errorf("claude_registries = %v", st.ClaudeRegistries)
+	}
+}
