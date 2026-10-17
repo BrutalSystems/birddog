@@ -587,7 +587,9 @@ changes id*) after its deadline starts a new generation and raises its own.
 An exit already recorded for the run is not undone by losing sight of the
 session afterwards, so a target that finished in time is never reported
 overdue. Dropping `overdue` from `alert_on`, by update or sync, resolves an
-overdue incident that is open, since nothing would close it afterwards.
+overdue incident that is open, since nothing would close it afterwards. An
+update can drop it only once the target has no deadline: clear it first, or in
+the same request (`--clear-deadline` alongside the new `alert_on` in `--file`).
 
 Removing a target stops birddog watching it. It does nothing to the session,
 and what was already observed of it is kept.

@@ -1208,3 +1208,22 @@ func TestAnExitRecordedBeforeTheDeadlineIsNotUndoneByLosingSight(t *testing.T) {
 		}
 	}
 }
+
+// A followed session is a new run with its own overdue incident; the old run's
+// closes even though the pass closes no condition.
+func TestANewRunClosesTheOldRunsOverdue(t *testing.T) {
+	obs := &fakeObserver{sighting: sighting(policy.StatusActive, "session-a", t0)}
+	m, st := newMonitor(t, obs, func(p *config.Policy) {
+		at := t0.Add(time.Minute)
+		p.AlertOn, p.Deadline = []string{config.ConditionOverdue}, &at
+	})
+
+	_ = m.Tick(t0.Add(2 * time.Minute))
+	obs.sighting = sighting(policy.StatusActive, "session-b", t0.Add(3*time.Minute))
+	_ = m.Tick(t0.Add(3 * time.Minute))
+
+	open, _ := st.OpenIncidents("worker-1")
+	if len(open) != 1 || open[0].Condition != config.ConditionOverdue || open[0].Generation != 2 {
+		t.Errorf("open = %+v, want only the new run's overdue incident", open)
+	}
+}

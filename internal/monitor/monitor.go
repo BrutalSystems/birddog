@@ -527,14 +527,9 @@ func (m *Monitor) settled(target config.Target, d policy.Decision, generation in
 		}
 	}
 
-	if len(d.Close) == 0 {
-		// applyDecision does not read the open set at all in this case, so
-		// nothing it would do depends on what is open.
-		return true, nil
-	}
 	for _, inc := range open {
 		// A superseded run's incident is closed out regardless of condition,
-		// but only on a pass that closes something.
+		// on every pass, as applyDecision does.
 		if inc.Generation < generation {
 			return false, nil
 		}
@@ -769,10 +764,11 @@ func (m *Monitor) applyDecision(target config.Target, d policy.Decision, generat
 			}
 		}
 	}
-	if len(d.Close) == 0 {
-		return nil
-	}
-
+	// Read even when nothing is to close: a superseded run's incidents are
+	// closed out regardless. A policy whose every condition still holds —
+	// alert_on of overdue alone, past its deadline, across a followed
+	// session — closes nothing, and would otherwise keep the old run's
+	// incident open beside the new one's.
 	open, err := m.store.OpenIncidents(target.ID)
 	if err != nil {
 		return err
