@@ -26,18 +26,14 @@ birddog discover --json   # every attachable session: session_id, pid, proc_star
 birddog doctor            # what each runtime can and cannot be observed for, here
 ```
 
-**`discover` is empty, or misses sessions you know are live?** For Claude Code
-birddog reads only `~/.claude/sessions`. A session running under a different
-`CLAUDE_CONFIG_DIR` registers in `$CLAUDE_CONFIG_DIR/sessions` instead:
-
-```sh
-birddog discover --registry-dir "$CLAUDE_CONFIG_DIR/sessions"
-```
-
-That flag exists on `discover` only. A running instance and the `--owner`
-check always read `~/.claude/sessions`, so such a session cannot be watched or
-used as an owner until its registry record is visible there. Say so rather
-than starting an instance that will report it lost.
+**`discover` is empty, or misses sessions you know are live?** Claude Code
+registers a session under `$CLAUDE_CONFIG_DIR/sessions`. birddog reads
+`~/.claude/sessions`, `$CLAUDE_CONFIG_DIR/sessions`, and each profile listed in
+`BIRDDOG_CLAUDE_CONFIG_DIRS` (`:`-separated, e.g.
+`~/.claude-work:~/.claude-home`) — in `discover`, in a running instance, for
+`--owner` and for the claude-inbox route. A session under a profile not in that
+list cannot be watched: add the profile, in the environment the instance is
+started from. `discover --registry-dir DIR` lists one directory.
 
 A hand-started opencode TUI never appears: opencode is observable only with the
 `@brutalsystems/birddog-opencode` plugin loaded. Codex threads show
@@ -122,7 +118,12 @@ A hand-started opencode TUI never appears: opencode is observable only with the
 5. **Adjust without restarting**: `birddog watch add --instance <id> --file
    target.json`, `watch remove --target worker-1`, `watch update --target
    worker-1 --expect-quiet-for 20m --reason "test suite"` (silences quiet/idle
-   only; exit, input and loss still surface).
+   only; exit, input and loss still surface). If the watch list lives in a
+   file, edit the file and run `birddog watch sync --instance <id>` (or
+   `--file other.json`; `--dry-run` first): it adds, removes and updates to
+   match, leaving unchanged targets' history alone. `"follow_file": true` in
+   the config makes the instance do that by itself on every save. Verify a
+   change with `status --json`: each target carries its `policy`.
 
 6. **Stop it when the watching is done**: `birddog stop --instance <id>`.
    `birddog list` shows instances (`RUNNING` is decided by the process, not
@@ -137,6 +138,12 @@ A hand-started opencode TUI never appears: opencode is observable only with the
   `unavailable`; Claude Code needs hooks for tool calls and permission prompts.
 - **`(stale)` / `status_is_current: false`** — the last thing observed, not a
   present fact. Re-run `discover`; a restarted session is a new run.
+- **`session_followed`** in the feed — a Claude Code session ran `/clear` and
+  got a new id in the same process; the target moved to it (old id → new id in
+  the evidence). Not an exit. A resume in a new process is not followed.
+- **Where a session lives**: `discover --json` and `status --json` carry
+  `location` — `tty`, `terminal_app`, and for tmux (`muster` uses `tmux -L
+  muster`) the socket, session and pane, so it can be focused or attached.
 - **A Claude Code question asked in prose reports `idle`**, identical to a
   finished turn, unless the target has `transcript: true`. A turn ending is
   not the work finishing.
@@ -152,10 +159,15 @@ A hand-started opencode TUI never appears: opencode is observable only with the
 ## Hooks — ask first
 
 `birddog hooks install` lets birddog see tool calls and permission requests in
-Claude Code. It edits the user's `~/.claude/settings.json` (preserving existing
-hooks, keeping a `.birddog-backup`), which affects every Claude Code session
-that reads that file. **Ask before running it**; show
-`birddog hooks install --dry-run` first. `birddog hooks status` reports a
+Claude Code. It edits the settings file of one Claude Code profile —
+`$CLAUDE_CONFIG_DIR/settings.json` when that is set, else
+`~/.claude/settings.json`, or `--config-dir DIR` to name another — preserving
+existing hooks and keeping a `.birddog-backup`. That affects every session
+running under that profile, and no other: a user with several profiles needs
+it once per profile. **Ask before running it**; show
+`birddog hooks install --dry-run` first — its `settings_path` says which file,
+and `handler_runnable: false` with a `handler_problem` means the hooks would
+fire and fail. `birddog hooks status` reports a
 partial install, which is worse than none. `birddog hooks uninstall` removes
 exactly its own entries.
 

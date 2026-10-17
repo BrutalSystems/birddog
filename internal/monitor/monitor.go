@@ -26,7 +26,42 @@ type Sighting struct {
 	// changes, the target is a new generation — not a continuation — so
 	// nothing observed of the old session can describe the new one.
 	SessionIdentity string
+
+	// Follow is set when the session the target names has gone and the same
+	// process now answers under a new session id. The monitor moves the
+	// target to the new id and records that it did, rather than reporting
+	// the old id as lost.
+	Follow *Follow
+
+	// PID and ProcStart identify the process that answered, where the
+	// adapter knows it. Kept so a caller can say where the session lives —
+	// its terminal, its tmux pane — for a target configured with only a
+	// session id.
+	PID       int
+	ProcStart string
 }
+
+// Follow says a target's session continued under a new id.
+type Follow struct {
+	FromSessionID string
+	ToSessionID   string
+
+	// PID and ProcStart identify the process that carried on. They are the
+	// evidence for the follow: the same process is the same terminal and the
+	// same conversation surface, whatever id it now reports.
+	PID       int
+	ProcStart string
+
+	// Via names that evidence, so a consumer can tell how the link was made.
+	Via string
+}
+
+// FollowViaProcess: the new session id was reported by the same process,
+// identified by pid and start time, that the old one was.
+const FollowViaProcess = "process"
+
+// EventSessionFollowed is the event type recording a follow.
+const EventSessionFollowed = "session_followed"
 
 // Observer reads the current state of one target. It must never resume a
 // conversation, start a turn, or inject a prompt to find out.
@@ -71,6 +106,34 @@ type Monitor struct {
 	// floor is the moment the last detected wake happened. Passes after it
 	// measure durations from there rather than from before the sleep.
 	floor time.Time
+
+	// follows maps a target id and a session id it was configured with to
+	// the follow that replaced it. Loaded from the store once and kept
+	// current, so a target configured with an id that has since been
+	// followed is pointed at its successor on every pass — after a restart,
+	// after a sync from a file that still names the old id, after a watch is
+	// re-added.
+	follows       map[string]map[string]store.Follow
+	followsLoaded bool
+
+	// processes is the process last seen answering for each target. Only
+	// what a live sighting reported; a target that has gone keeps the last
+	// one, and Process says so.
+	processes map[string]Process
+}
+
+// Process is the process last seen answering for a target.
+type Process struct {
+	PID       int
+	ProcStart string
+	Live      bool
+}
+
+// Process returns the process last seen answering for a target. Callers hold
+// whatever guards a pass; the daemon reads it under the same lock.
+func (m *Monitor) Process(targetID string) (Process, bool) {
+	p, ok := m.processes[targetID]
+	return p, ok
 }
 
 // wakeThreshold is how far the wall and monotonic clocks may diverge before a
@@ -132,14 +195,24 @@ func (m *Monitor) Tick(now time.Time) error {
 	// Sighted first, decided second. A failure that hit every target at once
 	// says something about birddog's own view, and that has to be known
 	// before any conclusion is drawn from an individual target.
+	if err := m.loadFollows(); err != nil {
+		return err
+	}
+
 	sightings := make([]Sighting, len(m.cfg.Targets))
 	errs := make([]error, len(m.cfg.Targets))
 	learned := 0
-	for i, target := range m.cfg.Targets {
-		sightings[i], errs[i] = m.sight(target)
+	for i := range m.cfg.Targets {
+		sightings[i], errs[i] = m.sightResolved(i)
+		if f := sightings[i].Follow; f != nil {
+			if err := m.follow(&m.cfg.Targets[i], sightings[i], *f, now); err != nil {
+				return err
+			}
+		}
 		if observedSomething(sightings[i]) {
 			learned++
 		}
+		m.noteProcess(m.cfg.Targets[i].ID, sightings[i])
 	}
 
 	// Every target unobservable in the same pass is not evidence about every
@@ -160,6 +233,183 @@ func (m *Monitor) Tick(now time.Time) error {
 		if err := m.observeTarget(target, sightings[i], errs[i], correlated, now); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// Forgetter is an observer that keeps something per target between passes.
+type Forgetter interface {
+	Forget(targetID string)
+}
+
+// Forget drops everything learned in memory about a target, for one that has
+// been removed, added, or pointed at something else: what was learned for the
+// old definition says nothing about the new one. That includes what an
+// observer learned — the process a session was seen in, which is what lets a
+// follow happen — so a session added again starts fresh, and continuity
+// across the change comes only from a follow already recorded in the store.
+func (m *Monitor) Forget(targetID string) {
+	delete(m.processes, targetID)
+	for _, o := range m.observers {
+		if f, ok := o.(Forgetter); ok {
+			f.Forget(targetID)
+		}
+	}
+}
+
+func (m *Monitor) noteProcess(targetID string, s Sighting) {
+	if m.processes == nil {
+		m.processes = map[string]Process{}
+	}
+	if s.PID != 0 {
+		m.processes[targetID] = Process{PID: s.PID, ProcStart: s.ProcStart, Live: s.Live}
+		return
+	}
+	if p, ok := m.processes[targetID]; ok && !s.Live {
+		// Nothing answered this pass. The process is the last one seen, and
+		// is no longer known to be there.
+		p.Live = false
+		m.processes[targetID] = p
+	}
+}
+
+// loadFollows reads the recorded follows once, on the first pass.
+func (m *Monitor) loadFollows() error {
+	if m.followsLoaded {
+		return nil
+	}
+	recorded, err := m.store.Follows()
+	if err != nil {
+		return err
+	}
+	m.follows = map[string]map[string]store.Follow{}
+	for _, f := range recorded {
+		m.rememberFollow(f)
+	}
+	m.followsLoaded = true
+	return nil
+}
+
+func (m *Monitor) rememberFollow(f store.Follow) {
+	if m.follows[f.TargetID] == nil {
+		m.follows[f.TargetID] = map[string]store.Follow{}
+	}
+	m.follows[f.TargetID][f.FromSessionID] = f
+	// As the store does: the id followed to is current, so a link out of it
+	// is stale.
+	delete(m.follows[f.TargetID], f.ToSessionID)
+}
+
+// ResolveFollows points a target at the session its configured id has been
+// followed to, through as many follows as were recorded. It reports whether
+// it changed anything.
+//
+// A target naming a process of its own that is not the one a follow was
+// made in is left alone, and a chain stops at an id it has already visited.
+//
+// Callers hold whatever guards the target; the daemon calls it under the
+// same lock as a pass. Before the first pass nothing has been loaded and it
+// changes nothing, which is right: the first pass loads and applies them.
+func (m *Monitor) ResolveFollows(t *config.Target) bool {
+	byFrom := m.follows[t.ID]
+	if len(byFrom) == 0 {
+		return false
+	}
+	changed := false
+	visited := map[string]bool{}
+	for {
+		f, ok := byFrom[t.Attachment.SessionID]
+		if !ok || visited[f.ToSessionID] || f.ToSessionID == t.Attachment.SessionID {
+			break
+		}
+		// A target that names a process of its own, and not the one the
+		// follow was made in, was pointed somewhere on purpose.
+		if t.Attachment.PID != 0 && t.Attachment.ProcStart != "" &&
+			(t.Attachment.PID != f.PID || t.Attachment.ProcStart != f.ProcStart) {
+			break
+		}
+		visited[t.Attachment.SessionID] = true
+		t.Attachment.SessionID = f.ToSessionID
+		if f.PID != 0 && f.ProcStart != "" {
+			t.Attachment.PID = f.PID
+			t.Attachment.ProcStart = f.ProcStart
+		}
+		changed = true
+	}
+	return changed
+}
+
+// sightResolved observes a target, applying recorded follows only where the
+// configured session is not itself there to be seen.
+//
+// A recorded follow says where the configured id went once. It does not say
+// the id cannot come back: a conversation resumed under that id in a new
+// process is live under exactly the id the operator wrote, and pulling the
+// target to the session it was followed to before would watch the old
+// process instead — and, that process being gone, report a verified exit for
+// a session that is running. So the configured target is asked first, and
+// the follow applied only when that finds nothing live. Once applied the
+// target holds the followed id, so this costs a second look on one pass, not
+// every pass.
+func (m *Monitor) sightResolved(i int) (Sighting, error) {
+	resolved := m.cfg.Targets[i]
+	if !m.ResolveFollows(&resolved) {
+		return m.sight(m.cfg.Targets[i])
+	}
+	if s, err := m.sight(m.cfg.Targets[i]); err == nil && s.Live && s.Follow == nil {
+		return s, nil
+	}
+	m.cfg.Targets[i] = resolved
+	return m.sight(resolved)
+}
+
+// follow moves a target to the session its process now answers as, and
+// records that it did.
+//
+// Recorded as its own event, ahead of the observation of the new session, so
+// a consumer reading the feed sees the move before it sees the new id and is
+// never left to infer that a session it was told about vanished.
+func (m *Monitor) follow(t *config.Target, s Sighting, f Follow, now time.Time) error {
+	evidence, err := json.Marshal(map[string]any{
+		"from_session_id": f.FromSessionID,
+		"to_session_id":   f.ToSessionID,
+		"pid":             f.PID,
+		"proc_start":      f.ProcStart,
+		"via":             f.Via,
+	})
+	if err != nil {
+		return fmt.Errorf("encode follow: %w", err)
+	}
+
+	prior, hadPrior, err := m.store.TargetState(t.ID)
+	if err != nil {
+		return err
+	}
+
+	record := store.Follow{
+		TargetID: t.ID, FromSessionID: f.FromSessionID, ToSessionID: f.ToSessionID,
+		PID: f.PID, ProcStart: f.ProcStart, At: now,
+	}
+	if _, err := m.store.RecordFollow(record, store.Event{
+		InstanceID: m.instanceID,
+		TargetID:   t.ID,
+		Type:       EventSessionFollowed,
+		Source:     t.Provider,
+		At:         now,
+		SessionID:  s.SessionIdentity,
+		Generation: generationFor(prior, hadPrior, s.SessionIdentity),
+		ConfigRev:  m.configRev,
+		Machine:    m.machine,
+		Evidence:   evidence,
+	}); err != nil {
+		return err
+	}
+	m.rememberFollow(record)
+
+	t.Attachment.SessionID = f.ToSessionID
+	if f.PID != 0 && f.ProcStart != "" {
+		t.Attachment.PID = f.PID
+		t.Attachment.ProcStart = f.ProcStart
 	}
 	return nil
 }
@@ -338,7 +588,13 @@ func (m *Monitor) sight(target config.Target) (Sighting, error) {
 	}
 	sighting, err := observer.Observe(target)
 	if err != nil {
-		return unobserved(), err
+		// Nothing observed is asserted — but why not is kept. An adapter that
+		// says the source could not be read, or contact was lost, has said
+		// the one thing a consumer can act on, and discarding it left the
+		// feed and status reporting an outage with no reason at all.
+		u := unobserved()
+		u.Reason = sighting.Reason
+		return u, err
 	}
 	return sighting, nil
 }

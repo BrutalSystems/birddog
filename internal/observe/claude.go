@@ -33,15 +33,36 @@ type Claude struct {
 	// decisions, so without hooks installed there is nothing to read and
 	// birddog says so rather than inferring.
 	HookState func(sessionID string) (hooks.State, error)
+
+	// seen remembers, per target, the process last observed answering for
+	// it. A target configured with only a session id still has a process
+	// behind it, and that process is what lets the target be followed when
+	// the session id changes underneath it. Touched only from the
+	// observation loop.
+	seen map[string]processIdentity
+}
+
+// processIdentity is a pid and the start time that makes it unambiguous,
+// and the session it was seen holding.
+//
+// The session is part of it. A target id can be pointed at another session —
+// by watch sync, or by removing and re-adding it — and the process learned for
+// the old one says nothing about the new one: following "the new id is gone,
+// and the process the target last had now reports another" would follow the
+// retargeted watch straight back to the worker it was moved away from.
+type processIdentity struct {
+	pid       int
+	procStart string
+	sessionID string
 }
 
 // NewClaude builds an observer over the real session registry and, where
 // hooks are installed, the state they record.
-func NewClaude(registryDir, hookDir string) *Claude {
+func NewClaude(registries func() []string, hookDir string) *Claude {
 	store := &hooks.Store{Dir: hookDir}
 	return &Claude{
 		List: func() ([]claude.Session, error) {
-			return claude.List(claude.Params{RegistryDir: registryDir})
+			return claude.List(claude.Params{Registries: registries})
 		},
 		HookState: func(sessionID string) (hooks.State, error) {
 			return store.Read(sessionID)
@@ -70,7 +91,8 @@ var statusMap = map[string]string{
 // Observe reports the current state of one Claude Code session.
 func (c *Claude) Observe(target config.Target) (monitor.Sighting, error) {
 	sessions, err := c.List()
-	if err != nil {
+	partial := claude.IsPartial(err)
+	if err != nil && !partial {
 		return unreadable(policy.ReasonSourceUnreadable), fmt.Errorf("read Claude Code session registry: %w", err)
 	}
 
@@ -78,11 +100,88 @@ func (c *Claude) Observe(target config.Target) (monitor.Sighting, error) {
 		if s.SessionID != target.Attachment.SessionID {
 			continue
 		}
+		if s.Live {
+			c.remember(target.ID, s)
+		}
 		sighting := c.sighting(s)
 		hookErr := c.enrich(&sighting, s)
 		return sighting, hookErr
 	}
+
+	if s, ok := c.successor(target, sessions); ok {
+		c.remember(target.ID, s)
+		sighting := c.sighting(s)
+		sighting.Follow = &monitor.Follow{
+			FromSessionID: target.Attachment.SessionID,
+			ToSessionID:   s.SessionID,
+			PID:           s.PID,
+			ProcStart:     s.ProcStart,
+			Via:           monitor.FollowViaProcess,
+		}
+		hookErr := c.enrich(&sighting, s)
+		return sighting, hookErr
+	}
+	if partial {
+		// Not found, in a listing missing a registry that could not be
+		// read. The session may be in that one, so nothing is concluded.
+		return unreadable(policy.ReasonSourceUnreadable), fmt.Errorf("read Claude Code session registry: %w", err)
+	}
 	return c.absent(target)
+}
+
+// Forget drops the process learned for a target. See monitor.Forgetter.
+func (c *Claude) Forget(targetID string) { delete(c.seen, targetID) }
+
+func (c *Claude) remember(targetID string, s claude.Session) {
+	if s.PID == 0 || s.ProcStart == "" {
+		return
+	}
+	if c.seen == nil {
+		c.seen = map[string]processIdentity{}
+	}
+	c.seen[targetID] = processIdentity{pid: s.PID, procStart: s.ProcStart, sessionID: s.SessionID}
+}
+
+// successor finds the session a target's process now reports, when the id
+// the target names has gone from the registry.
+//
+// Claude Code keeps one registry record per process and rewrites its session
+// id in place on /clear, so the conversation surface — the terminal, the pane,
+// the process an operator would focus — carries on under an id nobody
+// configured. Without this the target names an id that no longer exists while
+// the process it was watching is plainly still there, and reads as lost
+// forever.
+//
+// The link is the process identity, pid and start time together, and nothing
+// weaker. A pid alone is reused by the kernel; a terminal is reused by
+// whatever runs in it next. Both would follow a target onto a stranger. The
+// successor must also be live: a stale record proves only that something once
+// wrote it.
+//
+// A session resumed in a new process is a new process, and is not followed.
+func (c *Claude) successor(target config.Target, sessions []claude.Session) (claude.Session, bool) {
+	identity := processIdentity{pid: target.Attachment.PID, procStart: target.Attachment.ProcStart}
+	if identity.pid == 0 || identity.procStart == "" {
+		// Learned identity only for the session it was learned from.
+		if seen := c.seen[target.ID]; seen.sessionID == target.Attachment.SessionID {
+			identity = seen
+		} else {
+			identity = processIdentity{}
+		}
+	}
+	if identity.pid == 0 || identity.procStart == "" {
+		return claude.Session{}, false
+	}
+	for _, s := range sessions {
+		if s.PID != identity.pid || s.ProcStart != identity.procStart {
+			continue
+		}
+		if s.SessionID == "" || s.SessionID == target.Attachment.SessionID || !s.Live {
+			return claude.Session{}, false
+		}
+		return s, true
+	}
+	return claude.Session{}, false
 }
 
 // enrich adds what the hooks saw to what the registry said.
@@ -216,6 +315,8 @@ func (c *Claude) sighting(s claude.Session) monitor.Sighting {
 		// The process start is part of the identity, so a restarted session
 		// is a new generation rather than a continuation of the old run.
 		SessionIdentity: s.SessionID + "@" + s.ProcStart,
+		PID:             s.PID,
+		ProcStart:       s.ProcStart,
 	}
 }
 
@@ -290,6 +391,6 @@ func init() {
 	register("claude", func(d Deps) (monitor.Observer, error) {
 		// Wrapped, not replaced: the registry adapter answers first on every
 		// pass, and the transcript only adds what it cannot carry.
-		return transcript.Watch(NewClaude(d.ClaudeRegistryDir, d.HookStateDir), d.ProjectsDirs), nil
+		return transcript.Watch(NewClaude(d.ClaudeRegistries, d.HookStateDir), d.ProjectsDirs), nil
 	})
 }

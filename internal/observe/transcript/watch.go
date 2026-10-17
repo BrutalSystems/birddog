@@ -31,6 +31,14 @@ func Watch(inner monitor.Observer, projectsDirs []string) *Watcher {
 	return &Watcher{Inner: inner, ProjectsDirs: projectsDirs}
 }
 
+// Forget passes on to the inner observer, which is the one that keeps
+// anything per target.
+func (w *Watcher) Forget(targetID string) {
+	if f, ok := w.Inner.(monitor.Forgetter); ok {
+		f.Forget(targetID)
+	}
+}
+
 // Observe reports the inner observer's sighting, enriched where the target
 // asked for it and the transcript had something to say.
 //
@@ -61,7 +69,13 @@ func (w *Watcher) Observe(target config.Target) (monitor.Sighting, error) {
 	// Reason is deliberately not set anywhere below: it says why the
 	// observation is not a current, readable answer, and it is one — the
 	// registry answered. Only the enrichment failed.
-	path, locErr := Locate(w.ProjectsDirs, target.Attachment.SessionID)
+	// A sighting that followed the session to a new id describes that
+	// session, and its transcript is the one filed under the new id.
+	sessionID := target.Attachment.SessionID
+	if s.Follow != nil {
+		sessionID = s.Follow.ToSessionID
+	}
+	path, locErr := Locate(w.ProjectsDirs, sessionID)
 	if locErr != nil || path == "" {
 		s.InputRequestVisibility = policy.VisibilityUnavailable
 		return s, nil

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/BrutalSystems/birddog/internal/machine"
 	"github.com/BrutalSystems/birddog/internal/monitor"
 	"github.com/BrutalSystems/birddog/internal/notify"
+	"github.com/BrutalSystems/birddog/internal/platform/where"
 	// Imported for its side effect: registering the connector makes it
 	// configurable. A new route is a new package and one line here.
 	_ "github.com/BrutalSystems/birddog/internal/notify/claudeinbox"
@@ -65,21 +67,22 @@ func runDiscover(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	registry := *registryDir
-	if registry == "" {
-		var err error
-		if registry, err = claude.DefaultRegistryDir(); err != nil {
-			return err
-		}
+	params := claude.Params{RegistryDir: *registryDir}
+	if *registryDir == "" {
+		params.Registries = claude.Registries
 	}
 
-	claudeSessions, err := claude.List(claude.Params{RegistryDir: registry})
-	if err != nil {
+	claudeSessions, err := claude.List(params)
+	switch {
+	case err == nil:
+	case claude.IsPartial(err):
+		// What could be read is listed. discover shows what is there; it
+		// does not conclude anything from what is not.
+	case errors.Is(err, iofs.ErrNotExist):
 		// No registry directory means no sessions, which is an answer.
-		if !errors.Is(err, iofs.ErrNotExist) {
-			return err
-		}
 		claudeSessions = nil
+	default:
+		return err
 	}
 	rows := FromClaude(claudeSessions)
 
@@ -88,6 +91,7 @@ func runDiscover(args []string, stdout io.Writer) error {
 		return err
 	}
 	rows = append(rows, FromCodex(codexSessions)...)
+	Locate(rows, where.Default().Resolve)
 
 	if *asJSON {
 		return RenderJSON(stdout, rows)
@@ -410,6 +414,8 @@ func serveInstance(id, configPath string, cfg *config.Config, owner string, out 
 		RegistryDir: filepath.Join(stateDir, "registry"),
 		Observers:   observers,
 		Notifier:    notifier,
+		Locate:      where.Default().Resolve,
+		Registries:  claude.Registries,
 	})
 	if err != nil {
 		return err
@@ -461,45 +467,63 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	if sessionID == "" {
 		return nil
 	}
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return nil
-	}
+	return ownerWatchIn(sessionID, claude.Params{Registries: claude.Registries})
+}
+
+// ownerWatchIn is ownerWatch over the registries where says.
+func ownerWatchIn(sessionID string, where claude.Params) *daemon.Owner {
+	owner := &ownerTrack{claude.Tracker{SessionID: sessionID}}
 	return &daemon.Owner{
 		Description: sessionID,
 		Alive: func() bool {
-			sessions, err := claude.List(claude.Params{RegistryDir: registryDir})
-			if err != nil {
+			sessions, err := claude.List(where)
+			if err != nil && !claude.IsPartial(err) {
 				// Unreadable registry is not evidence the owner has gone.
 				// Saying it is alive keeps a transient failure from ending
 				// the watch; a genuine absence still reports three times.
 				return true
 			}
-			for _, s := range sessions {
-				if s.SessionID == sessionID {
-					return s.Live
-				}
-			}
-			return false
+			return owner.alive(sessions, err != nil)
 		},
 	}
+}
+
+// ownerTrack follows the owning session the way a watched target is followed.
+//
+// An orchestrator that runs /clear gets a new session id in the same process.
+// Its instance was tied to the old id, and without this would reap itself
+// three passes later while the orchestrator it exists for is plainly still
+// there.
+type ownerTrack struct{ claude.Tracker }
+
+// alive reports whether the owner is there. Not found in a listing that is
+// incomplete is not evidence it has gone: the owner may be in the registry
+// that could not be read, and three such passes would otherwise reap an
+// instance whose owner is running.
+func (o *ownerTrack) alive(sessions []claude.Session, partial bool) bool {
+	if s, ok := o.Find(sessions); ok {
+		return s.Live
+	}
+	return partial
 }
 
 // checkOwnerExists refuses a start naming a session that is not there, rather
 // than starting an instance that reaps itself moments later.
 func checkOwnerExists(sessionID string) error {
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return err
-	}
-	sessions, err := claude.List(claude.Params{RegistryDir: registryDir})
-	if err != nil {
+	sessions, err := claude.List(claude.Params{Registries: claude.Registries})
+	if err != nil && !claude.IsPartial(err) {
 		return fmt.Errorf("check owner session: %w", err)
 	}
 	for _, s := range sessions {
 		if s.SessionID == sessionID {
 			return nil
 		}
+	}
+	if err != nil {
+		// Refused all the same — an owner that cannot be confirmed would be
+		// counted absent from the start — but the message says it may be
+		// there, in the registry that could not be read.
+		return fmt.Errorf("Claude Code session %q to own this instance was not found, and the listing was incomplete: %w", sessionID, err)
 	}
 	return fmt.Errorf("no Claude Code session %q to own this instance; `birddog discover` lists them", sessionID)
 }
@@ -528,10 +552,6 @@ func opencodePluginLog(recordsDir string) string {
 }
 
 func buildObservers() (map[string]monitor.Observer, error) {
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return nil, err
-	}
 	lockDir, err := codex.DefaultLockDir()
 	if err != nil {
 		return nil, err
@@ -541,11 +561,11 @@ func buildObservers() (map[string]monitor.Observer, error) {
 		return nil, err
 	}
 	return observe.Build(observe.Deps{
-		ClaudeRegistryDir: registryDir,
-		HookStateDir:      hookStateDir(),
-		CodexLockDir:      lockDir,
-		OpencodeRecords:   opencodeRecordsDir(),
-		ProjectsDirs:      transcript.DefaultProjectsDirs(home),
+		ClaudeRegistries: claude.Registries,
+		HookStateDir:     hookStateDir(),
+		CodexLockDir:     lockDir,
+		OpencodeRecords:  opencodeRecordsDir(),
+		ProjectsDirs:     transcript.DefaultProjectsDirs(home),
 	})
 }
 
@@ -602,7 +622,7 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 	fmt.Fprint(w, "\n\n")
 	{
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "TARGET\tPROVIDER\tSTATUS\tATTENTION")
+		fmt.Fprintln(tw, "TARGET\tPROVIDER\tSTATUS\tATTENTION\tWHERE")
 		for _, t := range status.Targets {
 			state := t.Status
 			if state == "" {
@@ -624,7 +644,29 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 					}
 				}
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", t.ID, t.Provider, state, attention)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Provider, state, attention, whereText(t.Location))
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+
+		// The policy each target is watched under now, so a change made with
+		// watch update or watch sync can be checked rather than trusted.
+		fmt.Fprint(w, "\n")
+		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "TARGET\tALERT ON\tQUIET\tIDLE\tNO PROGRESS\tEXPECTED QUIET")
+		for _, t := range status.Targets {
+			if t.Policy == nil {
+				// An instance from before 2.1 does not report its policy.
+				// Saying so is the answer; printing zeroes would claim the
+				// target alerts on nothing.
+				fmt.Fprintf(tw, "%s\tunknown (instance predates 2.1)\t\t\t\t\n", t.ID)
+				continue
+			}
+			p := *t.Policy
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, alertOnText(p.AlertOn),
+				secondsText(p.QuietAfterSeconds), secondsText(p.IdleGraceSeconds),
+				noProgressText(p.NoProgressAfterSeconds), expectedQuietText(p))
 		}
 		if err := tw.Flush(); err != nil {
 			return err
@@ -632,6 +674,38 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 		fmt.Fprintf(w, "\nInput-request visibility is reported per target; \"unavailable\" means\nbirddog cannot see requests, not that there are none.\n")
 	}
 	return nil
+}
+
+func alertOnText(conditions []string) string {
+	if len(conditions) == 0 {
+		// Said outright: a target that alerts on nothing looks watched and
+		// is not, which is exactly what this table exists to catch.
+		return "nothing"
+	}
+	return strings.Join(conditions, ",")
+}
+
+func secondsText(n int) string { return (time.Duration(n) * time.Second).String() }
+
+func noProgressText(n int) string {
+	if n == 0 {
+		return "off"
+	}
+	return secondsText(n)
+}
+
+func expectedQuietText(p daemon.PolicyView) string {
+	if p.ExpectedQuietUntil == nil {
+		return "—"
+	}
+	text := "until " + p.ExpectedQuietUntil.UTC().Format(time.RFC3339)
+	if !p.ExpectedQuietActive {
+		text += " (lapsed)"
+	}
+	if p.ExpectedQuietReason != "" {
+		text += " — " + p.ExpectedQuietReason
+	}
+	return text
 }
 
 // eventsOpts holds the events command's flags. Defined once so the set a

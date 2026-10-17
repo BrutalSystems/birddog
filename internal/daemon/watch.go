@@ -19,6 +19,14 @@ import (
 
 // WatchAddParams registers a new target.
 type WatchAddParams struct {
+	// Spec is the target in the configuration file's format, and is what
+	// `watch add` sends. Parsed here exactly as a target in a file is, with
+	// the same defaults and validation.
+	Spec json.RawMessage `json:"spec,omitempty"`
+
+	// Target is the target as an in-memory structure, which is what earlier
+	// clients send. Its thresholds cannot cross the wire in that form, so
+	// what was left unset is given the file's defaults rather than zero.
 	Target config.Target `json:"target"`
 
 	// IdempotencyKey lets a caller retry a request it did not hear the answer
@@ -69,6 +77,15 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 	if prior, ok, err := d.priorResult(p.IdempotencyKey); err != nil || ok {
 		return prior, err
 	}
+	if len(p.Spec) > 0 {
+		target, err := config.ParseTarget(p.Spec)
+		if err != nil {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
+		}
+		p.Target = target
+	} else {
+		p.Target.Policy = config.FillDefaults(p.Target.Policy)
+	}
 
 	d.cfgMu.Lock()
 	defer d.cfgMu.Unlock()
@@ -85,6 +102,8 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 	}
 
+	// Nothing learned about an earlier target under this id carries over.
+	d.monitor.Forget(p.Target.ID)
 	d.opts.Config.Targets = append(d.opts.Config.Targets, p.Target)
 	return d.remember(p.IdempotencyKey, d.bumpRevision())
 }
@@ -120,6 +139,7 @@ func (d *Daemon) watchRemove(params json.RawMessage) (any, error) {
 	// The target's events and incidents are kept: they are what was observed,
 	// and stopping watching does not make them untrue.
 	d.opts.Config.Targets = kept
+	d.monitor.Forget(p.TargetID)
 	return d.remember(p.IdempotencyKey, d.bumpRevision())
 }
 

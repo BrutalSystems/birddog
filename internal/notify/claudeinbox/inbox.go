@@ -23,6 +23,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/BrutalSystems/birddog/internal/discover/claude"
 	"github.com/BrutalSystems/birddog/internal/notify"
 )
 
@@ -106,6 +107,12 @@ type statusFrame struct {
 // forever — never marked notified, and never retried either.
 func (c *Connector) Deliver(a notify.Alert) (notify.Outcome, error) {
 	recipient, err := c.Resolve()
+	if err != nil && claude.IsPartial(err) {
+		// A registry that could not be read may hold the orchestrator. That
+		// can change by the next attempt, so it is a failure to retry, not a
+		// recipient that does not exist.
+		return notify.Failed, fmt.Errorf("resolve orchestrator session: %w", err)
+	}
 	if err != nil {
 		// Nobody to deliver to, rather than a delivery that failed. The next
 		// attempt resolves identically, so retrying would spend the budget on

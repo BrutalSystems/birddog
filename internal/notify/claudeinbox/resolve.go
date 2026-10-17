@@ -34,15 +34,13 @@ func newConnector(settings map[string]string) (*Connector, error) {
 		return nil, fmt.Errorf("%q is required: it names the orchestrator session alerts go to", settingSessionID)
 	}
 
-	registryDir, err := claude.DefaultRegistryDir()
-	if err != nil {
-		return nil, err
-	}
+	// Followed across /clear, so alerts reach the orchestrator under its new
+	// session id instead of failing against the one it was configured with.
 	return &Connector{
 		// Resolved per delivery: a session that restarts gets a new pid,
 		// socket and token, and a recipient captured at startup would point
 		// at a session that no longer exists.
-		Resolve: func() (Recipient, error) { return ResolveSession(registryDir, sessionID) },
+		Resolve: trackedResolver(claude.Params{Registries: claude.Registries}, sessionID),
 	}, nil
 }
 
@@ -57,23 +55,44 @@ var keyFileName = regexp.MustCompile(`^(\d+)\.[0-9a-f]+\.key$`)
 // reason to, and the token goes straight onto the wire — never into an event,
 // a log line or an alert body.
 func ResolveSession(registryDir, sessionID string) (Recipient, error) {
-	sessions, err := claude.List(claude.Params{
-		RegistryDir: registryDir,
-		// Resolution needs the record, not a liveness verdict: an unreachable
-		// session produces a delivery failure, which is a better report than
-		// a resolution failure.
-		Probe:       func(string) bool { return true },
-		SameProcess: func(int, string) bool { return true },
-	})
-	if err != nil {
+	return resolveTracked(claude.Params{RegistryDir: registryDir}, &claude.Tracker{SessionID: sessionID})
+}
+
+// trackedResolver builds the per-delivery resolution, having learned the
+// recipient's process first.
+//
+// Learned now, when the connector is built, not at the first delivery. A
+// tracker learns the process only from a listing that finds the session under
+// the id it knows, and an instance can run for hours before its first alert:
+// an orchestrator that ran /clear in that time would otherwise be looked for
+// under an id that no longer exists, with no process to follow it by, and the
+// first alert would find nobody to deliver to.
+func trackedResolver(where claude.Params, sessionID string) func() (Recipient, error) {
+	tracker := &claude.Tracker{SessionID: sessionID}
+	if sessions, err := claude.List(where); err == nil || claude.IsPartial(err) {
+		tracker.Find(sessions)
+	}
+	return func() (Recipient, error) { return resolveTracked(where, tracker) }
+}
+
+// resolveTracked is ResolveSession for a session that may have changed id in
+// the same process since it was configured.
+func resolveTracked(where claude.Params, tracker *claude.Tracker) (Recipient, error) {
+	sessions, err := claude.List(where)
+	if err != nil && !claude.IsPartial(err) {
 		return Recipient{}, fmt.Errorf("read Claude Code session registry: %w", err)
 	}
 
-	for _, s := range sessions {
-		if s.SessionID != sessionID {
-			continue
-		}
-		token, domain, err := readPeerToken(registryDir, s.PID)
+	// Liveness is checked for real. It chooses between two records of one
+	// process, and it is what a follow to a new id requires; forcing it true
+	// let a stale copy win and a dead record be followed. Finding the
+	// configured id does not depend on it: a recipient that is there but not
+	// answering produces a delivery failure, which is a better report than
+	// a resolution failure.
+	if s, ok := tracker.Find(sessions); ok {
+		// The credential sits beside the record it belongs to, in that
+		// session's own profile.
+		token, domain, err := readPeerToken(s.Dir, s.PID)
 		if err != nil {
 			return Recipient{}, err
 		}
@@ -84,7 +103,11 @@ func ResolveSession(registryDir, sessionID string) (Recipient, error) {
 			PIDDomain:  domain,
 		}, nil
 	}
-	return Recipient{}, fmt.Errorf("orchestrator session %q: %w", sessionID, errNoSession)
+	if err != nil {
+		// The registry that could not be read may hold the orchestrator.
+		return Recipient{}, fmt.Errorf("orchestrator session %q: %w", tracker.SessionID, err)
+	}
+	return Recipient{}, fmt.Errorf("orchestrator session %q: %w", tracker.SessionID, errNoSession)
 }
 
 // readPeerToken reads the credential the session will accept.

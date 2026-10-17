@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/BrutalSystems/birddog/internal/discover/claude"
 	"github.com/BrutalSystems/birddog/internal/discover/codex"
+	"github.com/BrutalSystems/birddog/internal/platform/where"
 )
 
 // Visibility describes what birddog can see of a signal, as distinct from what
@@ -51,6 +54,75 @@ type Row struct {
 	// InputRequestVisibility says whether a permission or input wait could be
 	// observed for this session — never whether one exists.
 	InputRequestVisibility string `json:"input_request_visibility"`
+
+	// Location says where the session can be focused or attached. Absent
+	// when the session is not live or nothing could be found: locating is
+	// best-effort and never fails a listing.
+	Location *where.Location `json:"location,omitempty"`
+}
+
+// Locate fills in Location for every live row with a pid, resolving them all
+// in one pass. A resolve error leaves every location absent rather than
+// failing discovery.
+func Locate(rows []Row, resolve func(pids []int) (map[int]where.Location, error)) {
+	var pids []int
+	for _, r := range rows {
+		if r.Live && r.PID > 0 {
+			pids = append(pids, r.PID)
+		}
+	}
+	if len(pids) == 0 {
+		return
+	}
+	locs, err := resolve(pids)
+	if err != nil {
+		return
+	}
+	for i := range rows {
+		if !rows[i].Live || rows[i].PID <= 0 {
+			continue
+		}
+		if loc, ok := locs[rows[i].PID]; ok && !loc.Empty() {
+			l := loc
+			rows[i].Location = &l
+		}
+	}
+}
+
+// whereSessionWidth caps a tmux session name in the WHERE column. muster's
+// names carry a full UUID; its first eight hex digits are what tells them
+// apart at a glance, and the JSON carries the whole name.
+const whereSessionWidth = 15
+
+// whereText renders a location compactly for the WHERE column.
+func whereText(l *where.Location) string {
+	if l == nil {
+		return "—"
+	}
+	if t := l.Tmux; t != nil {
+		server := t.SocketName
+		if server == "" {
+			server = t.Socket
+		}
+		return fmt.Sprintf("tmux %s:%s:%s.%s", server, truncate(t.Session, whereSessionWidth), t.Window, t.Pane)
+	}
+	tty := strings.TrimPrefix(l.TTY, "/dev/")
+	switch {
+	case l.TerminalApp != "" && tty != "":
+		return l.TerminalApp + " " + tty
+	case tty != "":
+		return tty
+	case l.TerminalApp != "":
+		return l.TerminalApp
+	}
+	return "—"
+}
+
+func truncate(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
 }
 
 // FromClaude converts Claude Code sessions to rows.
@@ -150,15 +222,15 @@ func RenderText(w io.Writer, rows []Row) error {
 	sortRows(sorted)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tPROVIDER\tSTATUS\tPID\tSESSION\tCWD")
+	fmt.Fprintln(tw, "NAME\tPROVIDER\tSTATUS\tPID\tWHERE\tSESSION\tCWD")
 	for _, r := range sorted {
 		status := r.Status
 		if !r.StatusIsCurrent && status != statusUnavailable {
 			// Never present a dead session's last state as a current fact.
 			status += " (stale)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n",
-			r.Name, r.Provider, status, r.PID, r.SessionID, r.CWD)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			r.Name, r.Provider, status, r.PID, whereText(r.Location), r.SessionID, r.CWD)
 	}
 	return tw.Flush()
 }

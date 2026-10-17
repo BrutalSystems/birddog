@@ -21,6 +21,7 @@ import (
 	"github.com/BrutalSystems/birddog/internal/monitor"
 	"github.com/BrutalSystems/birddog/internal/notify"
 	"github.com/BrutalSystems/birddog/internal/platform/lockfile"
+	"github.com/BrutalSystems/birddog/internal/platform/where"
 	"github.com/BrutalSystems/birddog/internal/store"
 )
 
@@ -58,6 +59,14 @@ type Options struct {
 
 	// Now is injectable so tests can drive time exactly.
 	Now func() time.Time
+
+	// Registries reports the Claude Code session registries read, for
+	// status. Nil reports none.
+	Registries func() []string
+
+	// Locate says where processes live, for status. Nil reports no
+	// locations, which is what tests want: the real one runs ps and tmux.
+	Locate func(pids []int) (map[int]where.Location, error)
 }
 
 // defaultInterval is how often targets are observed. Frequent enough to notice
@@ -106,6 +115,13 @@ type Daemon struct {
 	mu       sync.Mutex
 	observed chan struct{}
 	paused   bool
+
+	// syncMu guards what is known about the configuration file: the stamp
+	// it had when last read, and how the last sync from it went.
+	syncMu    sync.Mutex
+	fileStamp fileStamp
+	syncedAt  *time.Time
+	syncErr   string
 }
 
 // Start brings an instance up: it takes the lock, opens the store, begins
@@ -154,6 +170,11 @@ func Start(opts Options) (*Daemon, error) {
 
 	if opts.Notifier != nil {
 		d.monitor.SetNotifier(opts.Notifier)
+	}
+	// The file as it was when the configuration was read, so following it
+	// starts from its next change rather than re-applying what was loaded.
+	if opts.ConfigPath != "" {
+		d.fileStamp, _ = stampOf(opts.ConfigPath)
 	}
 
 	server, err := ipc.Listen(opts.SocketPath, d.handle)
@@ -243,6 +264,8 @@ func (d *Daemon) pass() {
 	if paused {
 		return
 	}
+
+	d.followFile()
 
 	// A failing pass is not fatal. The next one may succeed, and stopping
 	// would lose the monitoring that still works.
@@ -375,6 +398,8 @@ func (d *Daemon) handle(method string, params json.RawMessage) (any, error) {
 		return d.watchRemove(params)
 	case "watch.update":
 		return d.watchUpdate(params)
+	case "watch.sync":
+		return d.watchSync(params)
 	case "stop":
 		go func() {
 			// Reply first, then stop: the caller should hear that its request
@@ -406,14 +431,27 @@ func (d *Daemon) status() (StatusResult, error) {
 	if d.opts.Owner != nil {
 		result.Owner = d.opts.Owner.Description
 	}
+	result.ConfigSync = d.configSyncView()
+	if d.opts.Registries != nil {
+		result.ClaudeRegistries = d.opts.Registries()
+	}
 
 	d.cfgMu.Lock()
 	watched := append([]config.Target(nil), d.opts.Config.Targets...)
 	revision := d.configRev
+	processes := make([]monitor.Process, len(watched))
+	for i, t := range watched {
+		processes[i], _ = d.monitor.Process(t.ID)
+		if processes[i].PID == 0 && t.Attachment.PID != 0 {
+			processes[i] = monitor.Process{PID: t.Attachment.PID, ProcStart: t.Attachment.ProcStart}
+		}
+	}
 	d.cfgMu.Unlock()
 	result.ConfigRevision = revision
+	locations := d.locate(processes)
+	now := d.now()
 
-	for _, target := range watched {
+	for i, target := range watched {
 		ts := TargetStatus{
 			// Not set from d.opts here: it comes from the stored state
 			// below, which knows where the session was actually observed.
@@ -427,6 +465,12 @@ func (d *Daemon) status() (StatusResult, error) {
 			InputRequestVisibility: "unavailable",
 			ExpectedQuietReason:    target.Policy.ExpectedQuietReason,
 			ExpectedQuietUntil:     target.Policy.ExpectedQuietUntil,
+			Policy:                 policyView(target.Policy, now),
+			AttachedSessionID:      target.Attachment.SessionID,
+			PID:                    processes[i].PID,
+		}
+		if loc, ok := locations[processes[i].PID]; ok && processes[i].Live {
+			ts.Location = &loc
 		}
 
 		if state, ok, err := d.store.TargetState(target.ID); err != nil {
@@ -435,7 +479,10 @@ func (d *Daemon) status() (StatusResult, error) {
 			ts.Status = state.Status
 			ts.Generation = state.Generation
 			ts.SessionID = state.SessionID
-			ts.ObservedAt = &state.ObservedAt
+			if state.Status != "" {
+				// A row carrying only a reason was never observed.
+				ts.ObservedAt = &state.ObservedAt
+			}
 			ts.Source = state.Source
 			if state.InputRequestVisibility != "" {
 				ts.InputRequestVisibility = state.InputRequestVisibility
@@ -446,8 +493,9 @@ func (d *Daemon) status() (StatusResult, error) {
 			// own. The stored reference is the only thing that knows.
 			ts.Machine = state.Machine
 			// A state is current only while it is still being observed. Any
-			// open observation-loss incident means it is history.
-			ts.StatusIsCurrent = true
+			// open observation-loss incident means it is history, and a row
+			// holding only a reason has no status to be current.
+			ts.StatusIsCurrent = state.Status != ""
 		}
 
 		incidents, err := d.store.OpenIncidents(target.ID)
@@ -471,6 +519,48 @@ func (d *Daemon) status() (StatusResult, error) {
 		result.Targets = append(result.Targets, ts)
 	}
 	return result, nil
+}
+
+// locate asks where the live processes behind the targets are, once for all
+// of them. A failure locates nothing: where a session lives is a convenience,
+// and status must answer without it.
+func (d *Daemon) locate(processes []monitor.Process) map[int]where.Location {
+	if d.opts.Locate == nil {
+		return nil
+	}
+	var pids []int
+	for _, p := range processes {
+		if p.PID != 0 && p.Live {
+			pids = append(pids, p.PID)
+		}
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+	found, err := d.opts.Locate(pids)
+	if err != nil {
+		return nil
+	}
+	out := map[int]where.Location{}
+	for pid, loc := range found {
+		if !loc.Empty() {
+			out[pid] = loc
+		}
+	}
+	return out
+}
+
+func policyView(p config.Policy, now time.Time) *PolicyView {
+	alertOn := append([]string{}, p.AlertOn...)
+	return &PolicyView{
+		AlertOn:                alertOn,
+		QuietAfterSeconds:      int(p.QuietAfter / time.Second),
+		IdleGraceSeconds:       int(p.IdleGrace / time.Second),
+		NoProgressAfterSeconds: int(p.NoProgressAfter / time.Second),
+		ExpectedQuietUntil:     p.ExpectedQuietUntil,
+		ExpectedQuietReason:    p.ExpectedQuietReason,
+		ExpectedQuietActive:    p.ExpectedQuietUntil != nil && now.Before(*p.ExpectedQuietUntil),
+	}
 }
 
 func (d *Daemon) events(params json.RawMessage) (EventsResult, error) {
