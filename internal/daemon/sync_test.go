@@ -345,3 +345,33 @@ func TestStatusDoesNotLocateASessionThatIsNotSeen(t *testing.T) {
 		t.Errorf("location = %+v for a session that is not live", loc)
 	}
 }
+
+// A sync sent with the request says nothing about the instance's own file.
+func TestASyncSentWithTheRequestIsNotReportedAsTheFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	if err := os.WriteFile(path, ledger("worker-1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, opts := startWith(t, &spyObserver{status: policy.StatusActive, live: true}, func(o *Options) { o.ConfigPath = path })
+
+	syncWith(t, opts.SocketPath, WatchSyncParams{Config: ledger("worker-1", "worker-2")})
+	var st StatusResult
+	if err := callStatus(opts.SocketPath, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.ConfigSync == nil || st.ConfigSync.LastSyncedAt != nil {
+		t.Errorf("config_sync = %+v, want no sync from the file recorded", st.ConfigSync)
+	}
+
+	// A re-read of the file that fails is recorded against the file.
+	if err := os.WriteFile(path, []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = ipc.Call(opts.SocketPath, "watch.sync", WatchSyncParams{}, &WatchSyncResult{})
+	if err := callStatus(opts.SocketPath, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.ConfigSync.LastError == "" {
+		t.Error("last_error empty after the file was refused")
+	}
+}

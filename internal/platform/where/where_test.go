@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 const psFixture = `    1     0 ??       /sbin/launchd
@@ -179,5 +180,35 @@ func TestParsePSKeepsSpacesInTheExecutablePath(t *testing.T) {
 	}
 	if got := bundleName(table[336].comm); got != "Google Chrome" {
 		t.Errorf("bundle = %q", got)
+	}
+}
+
+// Wedged servers share one budget, so status cannot be held for the sum of
+// their timeouts.
+func TestResolveBoundsAllTmuxCallsTogether(t *testing.T) {
+	calls := 0
+	r := Resolver{
+		PS: func(context.Context) ([]byte, error) {
+			return []byte("  100    50 ttys005  claude\n   50     1 ??       tmux\n"), nil
+		},
+		SocketDir: func() (string, error) { return "/tmux", nil },
+		Sockets: func(string) ([]string, error) {
+			return []string{"a", "b", "c", "d", "e", "f"}, nil
+		},
+		Tmux: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+			calls++
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	start := time.Now()
+	if _, err := r.Resolve([]int{100}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if took := time.Since(start); took > tmuxBudget+time.Second {
+		t.Errorf("Resolve took %s against wedged servers, want at most about %s", took, tmuxBudget)
+	}
+	if calls == 0 {
+		t.Error("no tmux server was asked: the fixture does not exercise the budget")
 	}
 }

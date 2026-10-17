@@ -58,6 +58,12 @@ type Tmux struct {
 // tmuxTimeout bounds each tmux call. A wedged server must not hang discovery.
 const tmuxTimeout = 2 * time.Second
 
+// tmuxBudget bounds every tmux call one Resolve makes, together. status calls
+// Resolve while a caller waits, and a per-call bound alone would let several
+// wedged servers in the socket directory add up to tens of seconds. Past it,
+// what was found is reported and the rest is simply not located.
+const tmuxBudget = 3 * time.Second
+
 // Resolver locates processes. Every dependency is injectable so the logic is
 // testable against fixture output rather than this machine's processes.
 type Resolver struct {
@@ -131,7 +137,9 @@ func (r Resolver) Resolve(pids []int) (map[int]Location, error) {
 		return result, nil
 	}
 
-	panes := r.panes()
+	budget, cancelBudget := context.WithTimeout(context.Background(), tmuxBudget)
+	defer cancelBudget()
+	panes := r.panes(budget)
 	clients := map[string][]client{} // by socket, fetched only when needed
 	for _, pid := range inTmux {
 		loc := result[pid]
@@ -144,7 +152,7 @@ func (r Resolver) Resolve(pids []int) (map[int]Location, error) {
 		if t.Attached {
 			cs, fetched := clients[t.Socket]
 			if !fetched {
-				cs = r.clients(t.Socket)
+				cs = r.clients(budget, t.Socket)
 				clients[t.Socket] = cs
 			}
 			for _, c := range cs {
@@ -172,7 +180,7 @@ type client struct {
 // panes maps each pane tty to its pane, across every live server in the
 // default socket directory. A socket whose server has gone answers "no server
 // running"; it is skipped, since a stale socket file is ordinary.
-func (r Resolver) panes() map[string]pane {
+func (r Resolver) panes(budget context.Context) map[string]pane {
 	found := map[string]pane{}
 	dir, err := r.SocketDir()
 	if err != nil {
@@ -183,8 +191,11 @@ func (r Resolver) panes() map[string]pane {
 		return found
 	}
 	for _, name := range names {
+		if budget.Err() != nil {
+			break
+		}
 		socket := filepath.Join(dir, name)
-		ctx, cancel := context.WithTimeout(context.Background(), tmuxTimeout)
+		ctx, cancel := context.WithTimeout(budget, tmuxTimeout)
 		// session_name goes last: it is the one field that may hold any
 		// character, so it takes the remainder of the line.
 		out, err := r.Tmux(ctx, socket, "list-panes", "-a", "-F",
@@ -213,8 +224,8 @@ func (r Resolver) panes() map[string]pane {
 	return found
 }
 
-func (r Resolver) clients(socket string) []client {
-	ctx, cancel := context.WithTimeout(context.Background(), tmuxTimeout)
+func (r Resolver) clients(budget context.Context, socket string) []client {
+	ctx, cancel := context.WithTimeout(budget, tmuxTimeout)
 	defer cancel()
 	out, err := r.Tmux(ctx, socket, "list-clients", "-F", "#{client_pid}\t#{session_name}")
 	if err != nil {

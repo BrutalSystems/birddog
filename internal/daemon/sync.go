@@ -50,6 +50,11 @@ type WatchSyncResult struct {
 	// RetentionChanged says the retention window was changed to the file's.
 	RetentionChanged bool `json:"retention_changed,omitempty"`
 
+	// FollowFileChanged says follow_file was changed to the file's. It
+	// changes how the instance reads its file, not what it watches, so it
+	// advances no revision.
+	FollowFileChanged bool `json:"follow_file_changed,omitempty"`
+
 	// NotApplied names what differs and was deliberately not applied, and
 	// why. The instance's name and where it delivers alerts are fixed for
 	// the life of the process; they change when it is resumed.
@@ -115,13 +120,17 @@ func (d *Daemon) watchSync(params json.RawMessage) (any, error) {
 	}
 
 	result, err := d.sync(data, source, p.DryRun)
+	// Only a sync from the file says anything about the file. One sent with
+	// the request may match a different file entirely.
+	if source == d.opts.ConfigPath && !p.DryRun {
+		d.noteSync(err)
+	}
 	if err != nil {
 		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 	}
 	if p.DryRun {
 		return result, nil
 	}
-	d.noteSync(nil)
 	return d.remember(p.IdempotencyKey, result)
 }
 
@@ -149,10 +158,6 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 
 	next := make([]config.Target, 0, len(cfg.Targets))
 	for _, t := range cfg.Targets {
-		// A file naming an id the target has since been followed away from
-		// means the session being followed, not one that no longer exists.
-		d.monitor.ResolveFollows(&t)
-
 		cur, ok := current[t.ID]
 		if !ok {
 			result.Added = append(result.Added, t.ID)
@@ -162,7 +167,13 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		delete(current, t.ID)
 
 		t.Policy = keepRuntimeOverride(t.Policy, cur.Policy, now)
-		if reflect.DeepEqual(cur, t) {
+		// A file naming an id the target has since been followed away from
+		// means the session being followed, so it is unchanged. The file's
+		// own target is what is kept when it differs: the next pass decides
+		// whether a recorded follow still applies, as it does at start.
+		resolved := t
+		d.monitor.ResolveFollows(&resolved)
+		if reflect.DeepEqual(cur, t) || reflect.DeepEqual(cur, resolved) {
 			result.Unchanged = append(result.Unchanged, t.ID)
 			next = append(next, cur)
 			continue
@@ -184,13 +195,13 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		result.NotApplied = append(result.NotApplied, "notification: takes effect when the instance is resumed")
 	}
 
-	followChanged := cfg.FollowFile != d.opts.Config.FollowFile
-	if followChanged && !dryRun {
-		// Not a change to what is watched, so it advances no revision.
+	result.FollowFileChanged = cfg.FollowFile != d.opts.Config.FollowFile
+	if result.FollowFileChanged && !dryRun {
 		d.opts.Config.FollowFile = cfg.FollowFile
 	}
-	result.Changed = len(result.Added)+len(result.Removed)+len(result.Updated) > 0 || result.RetentionChanged
-	if dryRun || !result.Changed {
+	watchChanged := len(result.Added)+len(result.Removed)+len(result.Updated) > 0 || result.RetentionChanged
+	result.Changed = watchChanged || result.FollowFileChanged
+	if dryRun || !watchChanged {
 		result.ConfigRevision = d.configRev
 		result.Targets = len(d.opts.Config.Targets)
 		result.Note = watchNote

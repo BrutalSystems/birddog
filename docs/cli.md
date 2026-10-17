@@ -265,6 +265,14 @@ instance's store and replayed, so a resumed instance, or a `watch sync` from a
 file that still names the original id, lands on the session the target had
 been following rather than on an id that no longer exists.
 
+A replayed follow gives way to the id that was configured. The configured
+session is looked for first, and the follow applies only when it is not there
+live — so a conversation resumed under its original id, in a new process, is
+watched under that id rather than pulled back to the process that has gone. A
+target whose attachment names a different `pid` and `proc_start` from the
+process a follow was made in is left as configured. Following back to an id
+(A → B, then B → A) retires the older link, so it cannot cycle.
+
 `--owner` follows the owning session the same way, so an orchestrator that
 runs `/clear` keeps its instance. That link is learned from the passes that saw
 the owner, so it holds for the life of the instance process.

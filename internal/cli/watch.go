@@ -233,6 +233,9 @@ func renderSync(w io.Writer, res daemon.WatchSyncResult) error {
 	if res.RetentionChanged {
 		fmt.Fprintf(w, "  retention changed to the file's\n")
 	}
+	if res.FollowFileChanged {
+		fmt.Fprintf(w, "  follow_file changed to the file's\n")
+	}
 	for _, n := range res.NotApplied {
 		fmt.Fprintf(w, "  not applied: %s\n", n)
 	}

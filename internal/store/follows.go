@@ -81,6 +81,17 @@ func (s *Store) RecordFollow(f Follow, e Event) (int64, error) {
 		return 0, fmt.Errorf("record follow: %w", err)
 	}
 
+	// The id followed to is current now, so any older link leading away from
+	// it is stale. Left in place, A -> B followed later by B -> A replays as
+	// a cycle, and a session resumed under an id it once left is pulled back
+	// to where it went then.
+	if _, err := tx.Exec(
+		`DELETE FROM follows WHERE target_id = ? AND from_session_id = ?`,
+		f.TargetID, f.ToSessionID,
+	); err != nil {
+		return 0, fmt.Errorf("record follow: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("record follow: %w", err)
 	}

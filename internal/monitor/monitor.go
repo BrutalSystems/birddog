@@ -203,8 +203,7 @@ func (m *Monitor) Tick(now time.Time) error {
 	errs := make([]error, len(m.cfg.Targets))
 	learned := 0
 	for i := range m.cfg.Targets {
-		m.ResolveFollows(&m.cfg.Targets[i])
-		sightings[i], errs[i] = m.sight(m.cfg.Targets[i])
+		sightings[i], errs[i] = m.sightResolved(i)
 		if f := sightings[i].Follow; f != nil {
 			if err := m.follow(&m.cfg.Targets[i], sightings[i], *f, now); err != nil {
 				return err
@@ -276,11 +275,17 @@ func (m *Monitor) rememberFollow(f store.Follow) {
 		m.follows[f.TargetID] = map[string]store.Follow{}
 	}
 	m.follows[f.TargetID][f.FromSessionID] = f
+	// As the store does: the id followed to is current, so a link out of it
+	// is stale.
+	delete(m.follows[f.TargetID], f.ToSessionID)
 }
 
 // ResolveFollows points a target at the session its configured id has been
 // followed to, through as many follows as were recorded. It reports whether
 // it changed anything.
+//
+// A target naming a process of its own that is not the one a follow was
+// made in is left alone, and a chain stops at an id it has already visited.
 //
 // Callers hold whatever guards the target; the daemon calls it under the
 // same lock as a pass. Before the first pass nothing has been loaded and it
@@ -291,13 +296,19 @@ func (m *Monitor) ResolveFollows(t *config.Target) bool {
 		return false
 	}
 	changed := false
-	// Bounded by the number of recorded follows, so a cycle — A followed to
-	// B, and B later followed back to A — cannot loop.
-	for i := 0; i <= len(byFrom); i++ {
+	visited := map[string]bool{}
+	for {
 		f, ok := byFrom[t.Attachment.SessionID]
-		if !ok || f.ToSessionID == t.Attachment.SessionID {
+		if !ok || visited[f.ToSessionID] || f.ToSessionID == t.Attachment.SessionID {
 			break
 		}
+		// A target that names a process of its own, and not the one the
+		// follow was made in, was pointed somewhere on purpose.
+		if t.Attachment.PID != 0 && t.Attachment.ProcStart != "" &&
+			(t.Attachment.PID != f.PID || t.Attachment.ProcStart != f.ProcStart) {
+			break
+		}
+		visited[t.Attachment.SessionID] = true
 		t.Attachment.SessionID = f.ToSessionID
 		if f.PID != 0 && f.ProcStart != "" {
 			t.Attachment.PID = f.PID
@@ -306,6 +317,30 @@ func (m *Monitor) ResolveFollows(t *config.Target) bool {
 		changed = true
 	}
 	return changed
+}
+
+// sightResolved observes a target, applying recorded follows only where the
+// configured session is not itself there to be seen.
+//
+// A recorded follow says where the configured id went once. It does not say
+// the id cannot come back: a conversation resumed under that id in a new
+// process is live under exactly the id the operator wrote, and pulling the
+// target to the session it was followed to before would watch the old
+// process instead — and, that process being gone, report a verified exit for
+// a session that is running. So the configured target is asked first, and
+// the follow applied only when that finds nothing live. Once applied the
+// target holds the followed id, so this costs a second look on one pass, not
+// every pass.
+func (m *Monitor) sightResolved(i int) (Sighting, error) {
+	resolved := m.cfg.Targets[i]
+	if !m.ResolveFollows(&resolved) {
+		return m.sight(m.cfg.Targets[i])
+	}
+	if s, err := m.sight(m.cfg.Targets[i]); err == nil && s.Live && s.Follow == nil {
+		return s, nil
+	}
+	m.cfg.Targets[i] = resolved
+	return m.sight(resolved)
 }
 
 // follow moves a target to the session its process now answers as, and

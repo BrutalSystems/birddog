@@ -102,7 +102,6 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 	}
 
-	d.monitor.ResolveFollows(&p.Target)
 	d.opts.Config.Targets = append(d.opts.Config.Targets, p.Target)
 	return d.remember(p.IdempotencyKey, d.bumpRevision())
 }
