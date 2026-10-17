@@ -442,6 +442,7 @@ func (m *Monitor) observeTarget(target config.Target, sighting Sighting, observe
 	}
 
 	sighting.ThresholdFloor = laterOf(m.floor, m.targetFloor[target.ID])
+	sighting.ExitRecorded = hadPrior && prior.Status == policy.StatusExited && prior.Generation == generation
 	decision := policy.Evaluate(sighting.Observation, target.Policy, now)
 
 	// A verified exit is terminal: the session will never report anything

@@ -1180,3 +1180,31 @@ func TestExitResolvesOverdueAndAnExitedTargetIsNeverOverdue(t *testing.T) {
 		t.Errorf("open = %v, want no overdue for a target that exited before its deadline", got)
 	}
 }
+
+// A session that exited before its deadline, and whose record then became
+// unreadable after it, is not overdue: losing sight of an exit does not undo it.
+func TestAnExitRecordedBeforeTheDeadlineIsNotUndoneByLosingSight(t *testing.T) {
+	n := &notify.Fake{Outcome: notify.Delivered}
+	obs := &fakeObserver{sighting: sighting(policy.StatusExited, "session-a", t0)}
+	m, st := newMonitor(t, obs, withOverdueAt(t0.Add(time.Minute)))
+	m.SetNotifier(n)
+
+	_ = m.Tick(t0)
+	for i := 2; i < 8; i++ {
+		// Alternate: unreadable, then the exit seen again.
+		if i%2 == 0 {
+			obs.sighting, obs.err = Sighting{}, errors.New("registry unreadable")
+		} else {
+			obs.sighting, obs.err = sighting(policy.StatusExited, "session-a", t0), nil
+		}
+		_ = m.Tick(t0.Add(time.Duration(i) * time.Minute))
+		if got := openConditions(t, st); slices.Contains(got, config.ConditionOverdue) {
+			t.Fatalf("pass %d: open = %v, want no overdue for a session that exited before its deadline", i, got)
+		}
+	}
+	for _, a := range n.Delivered {
+		if a.Condition == config.ConditionOverdue {
+			t.Errorf("delivered an overdue alert for an exited session")
+		}
+	}
+}

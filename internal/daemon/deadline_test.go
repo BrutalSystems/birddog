@@ -128,3 +128,63 @@ func TestSyncKeepsADeadlineSetByUpdate(t *testing.T) {
 		t.Errorf("policy = %+v, want the updated deadline kept across the sync", p)
 	}
 }
+
+func withDeadlineAfter(seconds int, alertOn []string) []byte {
+	var cfg map[string]any
+	_ = json.Unmarshal(ledger("worker-1"), &cfg)
+	pol := cfg["targets"].([]any)[0].(map[string]any)["policy"].(map[string]any)
+	pol["alert_on"] = alertOn
+	pol["deadline_after_seconds"] = seconds
+	data, _ := json.Marshal(cfg)
+	return data
+}
+
+// A relative deadline a sync introduces runs from when the instance took the
+// target on, not from the sync.
+func TestARelativeDeadlineIntroducedBySyncRunsFromTheAdd(t *testing.T) {
+	before := time.Now()
+	_, opts := start(t, &spyObserver{status: policy.StatusActive, live: true})
+	time.Sleep(1500 * time.Millisecond)
+
+	syncWith(t, opts.SocketPath, WatchSyncParams{Config: withDeadlineAfter(3600, overdueAlerts)})
+	got := targets(t, opts.SocketPath)[0].Policy.Deadline
+	if got == nil || got.After(before.Add(time.Hour+time.Second)) {
+		t.Errorf("deadline = %v, want an hour from the start (%v), not from the sync", got, before.Add(time.Hour))
+	}
+}
+
+// Clearing a relative deadline leaves nothing that needs overdue, so alert_on
+// may drop it afterwards.
+func TestAClearedRelativeDeadlineDoesNotPinOverdue(t *testing.T) {
+	_, opts := start(t, &spyObserver{status: policy.StatusActive, live: true})
+	syncWith(t, opts.SocketPath, WatchSyncParams{Config: withDeadlineAfter(3600, overdueAlerts)})
+
+	updateDeadline(t, opts.SocketPath, "")
+	if err := ipc.Call(opts.SocketPath, "watch.update", WatchUpdateParams{
+		TargetID: "worker-1", AlertOn: []string{config.ConditionExit},
+	}, &WatchResult{}); err != nil {
+		t.Errorf("watch.update alert_on=[exit] after clearing the deadline: %v", err)
+	}
+}
+
+// Dropping overdue from alert_on resolves an open overdue incident: nothing
+// else ever would.
+func TestDroppingOverdueResolvesItsOpenIncident(t *testing.T) {
+	_, opts := start(t, &spyObserver{status: policy.StatusActive, live: true})
+	updateDeadline(t, opts.SocketPath, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	waitFor(t, "overdue to open", func() bool {
+		return hasIncident(targets(t, opts.SocketPath)[0], config.ConditionOverdue)
+	})
+
+	// A file with no deadline and an alert list without overdue.
+	var cfg map[string]any
+	_ = json.Unmarshal(ledger("worker-1"), &cfg)
+	cfg["targets"].([]any)[0].(map[string]any)["policy"].(map[string]any)["alert_on"] = []string{config.ConditionExit}
+	data, _ := json.Marshal(cfg)
+	syncWith(t, opts.SocketPath, WatchSyncParams{Config: data})
+
+	ts := targets(t, opts.SocketPath)[0]
+	if ts.Policy.Deadline != nil || hasIncident(ts, config.ConditionOverdue) {
+		t.Errorf("target = %+v, want no deadline and the overdue incident resolved", ts)
+	}
+}

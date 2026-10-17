@@ -397,9 +397,11 @@ func ValidateTarget(t Target) error {
 }
 
 // ValidateDeadline refuses a deadline that could never alert: one on a target
-// whose alert list leaves overdue out would be a setting nobody gets.
+// whose alert list leaves overdue out would be a setting nobody gets. A
+// relative deadline an update has cleared is not one.
 func ValidateDeadline(p Policy) error {
-	if (p.Deadline != nil || p.DeadlineAfter > 0) && !p.AlertsOn(ConditionOverdue) {
+	pending := p.DeadlineAfter > 0 && p.Deadline == nil && !p.DeadlineByUpdate
+	if (p.Deadline != nil || pending) && !p.AlertsOn(ConditionOverdue) {
 		return fmt.Errorf("a deadline alerts only when alert_on includes %q", ConditionOverdue)
 	}
 	return nil

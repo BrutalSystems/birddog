@@ -100,6 +100,11 @@ type Daemon struct {
 	cfgMu     sync.Mutex
 	configRev int64
 
+	// addedAt is when this instance took each target on, which is what a
+	// relative deadline runs from — including one a later sync introduces
+	// or changes. Guarded by cfgMu.
+	addedAt map[string]time.Time
+
 	stop chan struct{}
 
 	// done closes when the observation loop ends; released closes once
@@ -159,10 +164,13 @@ func Start(opts Options) (*Daemon, error) {
 	//
 	// Written only when something resolves, so a configuration shared with a
 	// caller is not touched for the targets that have no relative deadline.
+	started := opts.Now()
+	addedAt := map[string]time.Time{}
 	if opts.Config != nil {
 		for i, t := range opts.Config.Targets {
+			addedAt[t.ID] = started
 			if t.Policy.DeadlineAfter > 0 && t.Policy.Deadline == nil {
-				opts.Config.Targets[i].Policy = config.ResolveDeadline(t.Policy, opts.Now())
+				opts.Config.Targets[i].Policy = config.ResolveDeadline(t.Policy, started)
 			}
 		}
 	}
@@ -180,6 +188,7 @@ func Start(opts Options) (*Daemon, error) {
 		done:     make(chan struct{}),
 		released: make(chan struct{}),
 		observed: make(chan struct{}),
+		addedAt:  addedAt,
 	}
 
 	if opts.Notifier != nil {

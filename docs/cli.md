@@ -580,10 +580,14 @@ than set to alert on nothing.
 
 In a file a deadline is `"deadline": "<RFC3339>"` or
 `"deadline_after_seconds": N`, never both. The relative form runs from when the
-instance took the target on — start, `watch add`, or the sync that added it —
-so `resume` restarts it; use the absolute form for a deadline that must not
+instance took the target on — start, `watch add`, or the sync that added it,
+including when a later sync introduces or changes it — so `resume` restarts it; use the absolute form for a deadline that must not
 move. One run is one incident: a session that changes id (see *When a session
 changes id*) after its deadline starts a new generation and raises its own.
+An exit already recorded for the run is not undone by losing sight of the
+session afterwards, so a target that finished in time is never reported
+overdue. Dropping `overdue` from `alert_on`, by update or sync, resolves an
+overdue incident that is open, since nothing would close it afterwards.
 
 Removing a target stops birddog watching it. It does nothing to the session,
 and what was already observed of it is kept.

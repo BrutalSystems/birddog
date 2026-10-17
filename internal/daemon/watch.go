@@ -91,7 +91,6 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 	} else {
 		p.Target.Policy = config.FillDefaults(p.Target.Policy)
 	}
-	p.Target.Policy = config.ResolveDeadline(p.Target.Policy, d.now())
 
 	d.cfgMu.Lock()
 	defer d.cfgMu.Unlock()
@@ -107,6 +106,10 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 	if err := config.ValidateTarget(p.Target); err != nil {
 		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 	}
+
+	now := d.now()
+	p.Target.Policy = config.ResolveDeadline(p.Target.Policy, now)
+	d.addedAt[p.Target.ID] = now
 
 	// Nothing learned about an earlier target under this id carries over.
 	d.monitor.Forget(p.Target.ID)
@@ -145,6 +148,7 @@ func (d *Daemon) watchRemove(params json.RawMessage) (any, error) {
 	// The target's events and incidents are kept: they are what was observed,
 	// and stopping watching does not make them untrue.
 	d.opts.Config.Targets = kept
+	delete(d.addedAt, p.TargetID)
 	d.monitor.Forget(p.TargetID)
 	return d.remember(p.IdempotencyKey, d.bumpRevision())
 }
@@ -172,6 +176,9 @@ func (d *Daemon) watchUpdate(params json.RawMessage) (any, error) {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 		}
 		d.opts.Config.Targets[i].Policy = updated
+		if err := d.resolveUnaskedOverdue(d.opts.Config.Targets[i]); err != nil {
+			return nil, err
+		}
 		return d.remember(p.IdempotencyKey, d.bumpRevision())
 	}
 
@@ -233,6 +240,33 @@ func applyPolicyUpdate(current config.Policy, p WatchUpdateParams) (config.Polic
 		return config.Policy{}, err
 	}
 	return current, nil
+}
+
+// resolveUnaskedOverdue resolves an open overdue incident on a target whose
+// policy no longer asks about overdue. Callers hold cfgMu.
+//
+// The policy deliberately leaves a condition it is not asked about alone, so
+// once alert_on drops overdue nothing would ever close one already open: not
+// the exit, and not clearing the deadline. Overdue is the one condition whose
+// incident outlives the setting that raised it, because the setting is a
+// moment rather than an observation, so it is closed here, when the change is
+// made.
+func (d *Daemon) resolveUnaskedOverdue(t config.Target) error {
+	if t.Policy.AlertsOn(config.ConditionOverdue) {
+		return nil
+	}
+	open, err := d.store.OpenIncidents(t.ID)
+	if err != nil {
+		return err
+	}
+	for _, inc := range open {
+		if inc.Condition == config.ConditionOverdue {
+			if err := d.store.ResolveIncident(inc.ID, d.now()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // bumpRevision records that the watch list changed. Callers hold cfgMu.

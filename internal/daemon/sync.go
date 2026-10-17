@@ -161,6 +161,9 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		cur, ok := current[t.ID]
 		if !ok {
 			t.Policy = config.ResolveDeadline(t.Policy, now)
+			if !dryRun {
+				d.addedAt[t.ID] = now
+			}
 			result.Added = append(result.Added, t.ID)
 			next = append(next, t)
 			continue
@@ -168,7 +171,11 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		delete(current, t.ID)
 
 		t.Policy = keepRuntimeOverride(t.Policy, cur.Policy, now)
-		t.Policy = keepDeadline(t.Policy, cur.Policy, now)
+		added, ok := d.addedAt[t.ID]
+		if !ok {
+			added = now
+		}
+		t.Policy = keepDeadline(t.Policy, cur.Policy, added)
 		// A file naming an id the target has since been followed away from
 		// means the session being followed, so it is unchanged. The file's
 		// own target is what is kept when it differs: the next pass decides
@@ -219,6 +226,14 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 		d.monitor.Forget(id)
 	}
 	d.opts.Config.Targets = next
+	for _, id := range result.Removed {
+		delete(d.addedAt, id)
+	}
+	for _, t := range next {
+		if err := d.resolveUnaskedOverdue(t); err != nil {
+			return WatchSyncResult{}, err
+		}
+	}
 	d.opts.Config.Retention = cfg.Retention
 	d.opts.Config.FollowFile = cfg.FollowFile
 	result.WatchResult = d.bumpRevision()
@@ -253,12 +268,13 @@ func keepRuntimeOverride(fromFile, current config.Policy, now time.Time) config.
 // again does not push it back, and one moved or cleared by `watch update`
 // stays moved or cleared, for the reason keepRuntimeOverride gives — whoever
 // set it knew something the file does not record. A file that changes its
-// deadline wins.
-func keepDeadline(fromFile, current config.Policy, now time.Time) config.Policy {
+// deadline wins, and a relative one it introduces or changes runs from when
+// the instance took the target on, not from the sync.
+func keepDeadline(fromFile, current config.Policy, addedAt time.Time) config.Policy {
 	sameAsFile := fromFile.DeadlineAfter == current.DeadlineAfter &&
 		equalTime(fromFile.FileDeadline, current.FileDeadline)
 	if !sameAsFile {
-		return config.ResolveDeadline(fromFile, now)
+		return config.ResolveDeadline(fromFile, addedAt)
 	}
 	if current.DeadlineByUpdate && current.Deadline != nil && !fromFile.AlertsOn(config.ConditionOverdue) {
 		// The file has since narrowed alert_on past overdue; the update's
