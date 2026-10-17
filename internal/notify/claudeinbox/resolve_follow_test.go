@@ -42,3 +42,25 @@ func TestRecipientIsFollowedAcrossANewSessionID(t *testing.T) {
 		t.Errorf("recipient = %+v, want the same process", got)
 	}
 }
+
+// The orchestrator runs /clear before the instance has sent it anything. The
+// first alert must still land: the process is learned when the connector is
+// built, not at the first delivery.
+func TestFirstAlertAfterAnEarlyClearStillLands(t *testing.T) {
+	dir := t.TempDir()
+	writeRecord(t, dir, "s1")
+	if err := os.WriteFile(filepath.Join(dir, "7.abc123.key"), []byte(`{"peerToken": "tok", "pidDomain": "darwin"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := trackedResolver(dir, "s1")
+	writeRecord(t, dir, "s2")
+
+	got, err := resolve()
+	if err != nil {
+		t.Fatalf("first resolve after /clear: %v", err)
+	}
+	if got.SocketPath != "/tmp/x.sock" || got.PeerToken != "tok" {
+		t.Errorf("recipient = %+v, want the same process", got)
+	}
+}

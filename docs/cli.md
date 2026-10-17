@@ -280,10 +280,12 @@ process a follow was made in is left as configured. Following back to an id
 
 `--owner` follows the owning session the same way, so an orchestrator that
 runs `/clear` keeps its instance, and so does the `claude-inbox` notification
-route, so alerts keep reaching the orchestrator under its new id. Both links
-are learned from the passes that saw the session under its configured id, so
-they hold for the life of the instance process: an instance resumed after its
-owner has already run `/clear` knows only the configured id.
+route, so alerts keep reaching the orchestrator under its new id. Each link is
+the process found under the configured id — the owner's from the first pass,
+the recipient's when the instance starts, before any alert — and is kept for
+the life of the instance process. An instance started or resumed after that
+session has already run `/clear` knows only the configured id, which no
+longer exists: name the current id in the configuration.
 
 ### Machine identity
 

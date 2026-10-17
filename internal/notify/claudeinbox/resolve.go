@@ -62,8 +62,24 @@ func ResolveSession(registryDir, sessionID string) (Recipient, error) {
 	return resolveTracked(registryDir, &claude.Tracker{SessionID: sessionID})
 }
 
+// trackedResolver builds the per-delivery resolution, having learned the
+// recipient's process first.
+//
+// Learned now, when the connector is built, not at the first delivery. A
+// tracker learns the process only from a listing that finds the session under
+// the id it knows, and an instance can run for hours before its first alert:
+// an orchestrator that ran /clear in that time would otherwise be looked for
+// under an id that no longer exists, with no process to follow it by, and the
+// first alert would find nobody to deliver to.
 func trackedResolver(registryDir, sessionID string) func() (Recipient, error) {
 	tracker := &claude.Tracker{SessionID: sessionID}
+	if sessions, err := claude.List(claude.Params{
+		RegistryDir: registryDir,
+		Probe:       func(string) bool { return true },
+		SameProcess: func(int, string) bool { return true },
+	}); err == nil {
+		tracker.Find(sessions)
+	}
 	return func() (Recipient, error) { return resolveTracked(registryDir, tracker) }
 }
 
