@@ -472,7 +472,10 @@ func (d *Daemon) status() (StatusResult, error) {
 			ts.Status = state.Status
 			ts.Generation = state.Generation
 			ts.SessionID = state.SessionID
-			ts.ObservedAt = &state.ObservedAt
+			if state.Status != "" {
+				// A row carrying only a reason was never observed.
+				ts.ObservedAt = &state.ObservedAt
+			}
 			ts.Source = state.Source
 			if state.InputRequestVisibility != "" {
 				ts.InputRequestVisibility = state.InputRequestVisibility
@@ -483,8 +486,9 @@ func (d *Daemon) status() (StatusResult, error) {
 			// own. The stored reference is the only thing that knows.
 			ts.Machine = state.Machine
 			// A state is current only while it is still being observed. Any
-			// open observation-loss incident means it is history.
-			ts.StatusIsCurrent = true
+			// open observation-loss incident means it is history, and a row
+			// holding only a reason has no status to be current.
+			ts.StatusIsCurrent = state.Status != ""
 		}
 
 		incidents, err := d.store.OpenIncidents(target.ID)

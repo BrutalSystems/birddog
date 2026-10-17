@@ -123,6 +123,9 @@ func (c *Claude) Observe(target config.Target) (monitor.Sighting, error) {
 	return c.absent(target)
 }
 
+// Forget drops the process learned for a target. See monitor.Forgetter.
+func (c *Claude) Forget(targetID string) { delete(c.seen, targetID) }
+
 func (c *Claude) remember(targetID string, s claude.Session) {
 	if s.PID == 0 || s.ProcStart == "" {
 		return

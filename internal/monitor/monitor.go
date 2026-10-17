@@ -237,10 +237,25 @@ func (m *Monitor) Tick(now time.Time) error {
 	return nil
 }
 
-// Forget drops what was last seen of a target's process, for a target that has
-// been removed or pointed at something else: the process seen for the old
-// definition says nothing about the new one.
-func (m *Monitor) Forget(targetID string) { delete(m.processes, targetID) }
+// Forgetter is an observer that keeps something per target between passes.
+type Forgetter interface {
+	Forget(targetID string)
+}
+
+// Forget drops everything learned in memory about a target, for one that has
+// been removed, added, or pointed at something else: what was learned for the
+// old definition says nothing about the new one. That includes what an
+// observer learned — the process a session was seen in, which is what lets a
+// follow happen — so a session added again starts fresh, and continuity
+// across the change comes only from a follow already recorded in the store.
+func (m *Monitor) Forget(targetID string) {
+	delete(m.processes, targetID)
+	for _, o := range m.observers {
+		if f, ok := o.(Forgetter); ok {
+			f.Forget(targetID)
+		}
+	}
+}
 
 func (m *Monitor) noteProcess(targetID string, s Sighting) {
 	if m.processes == nil {

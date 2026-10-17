@@ -142,6 +142,13 @@ is:
 
 Only the last will not change by asking again.
 
+`reason` is current even while `status` is history: a pass that observes
+nothing keeps the last status and records why, ordered against observations
+the same way they are ordered against each other, so a delayed report cannot
+overwrite a newer one. A target that has never been observed reports its
+`reason` with no `status`, no `observed_at` and `status_is_current: false` —
+nothing it did not see.
+
 ### Policy
 
 Every target carries `policy`: what it is being watched under **now**, in the
@@ -264,6 +271,12 @@ before its id changed. Nothing weaker is used: a pid alone is reused by the
 kernel, and a terminal is reused by whatever runs in it next — either would
 follow a target onto a stranger. A session resumed in a **new process** is a
 new process and is not followed.
+
+A process learned from earlier passes belongs to the target as it was then
+defined. `watch add`, `watch remove`, and a `watch sync` that adds, changes or
+removes a target all drop it, so a target added again — even for the same
+session — starts fresh: continuity across that change comes only from a follow
+already recorded in the store.
 
 The configuration file is not rewritten. Follows are recorded in the
 instance's store and replayed, so a resumed instance, or a `watch sync` from a

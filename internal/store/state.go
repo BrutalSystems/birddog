@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS target_state (
 	source      TEXT    NOT NULL DEFAULT '',
 	input_request_visibility TEXT NOT NULL DEFAULT 'unavailable',
 	reason                   TEXT NOT NULL DEFAULT '',
-	machine                  TEXT NOT NULL DEFAULT ''
+	machine                  TEXT NOT NULL DEFAULT '',
+	reason_ms                INTEGER NOT NULL DEFAULT 0
 );
 `
 
@@ -89,16 +90,13 @@ func (s *Store) Record(e Event) (seq int64, stateApplied bool, err error) {
 		}
 	} else if e.Reason != "" {
 		// An observation that asserts nothing keeps the last known status,
-		// which is history from now on. Why it is history is current, and
-		// is what reason is for: without this, status went on reporting the
+		// which is history from now on. Why it is history is current, and is
+		// what reason is for: without this, status went on reporting the
 		// reason of the last good observation — usually none — through an
-		// outage. Only the target's current run; a straggler from a
-		// replaced one says nothing about it.
-		if _, err := tx.Exec(
-			`UPDATE target_state SET reason = ? WHERE target_id = ? AND generation <= ?`,
-			e.Reason, e.TargetID, e.Generation,
-		); err != nil {
-			return 0, false, fmt.Errorf("record reason: %w", err)
+		// outage, and none at all for a target that had never been seen.
+		stateApplied, err = applyReason(tx, e)
+		if err != nil {
+			return 0, false, err
 		}
 	}
 
@@ -139,21 +137,73 @@ func applyState(tx *sql.Tx, e Event) (bool, error) {
 		visibility = "unavailable"
 	}
 
+	// The reason is taken from this observation unless a reason-only one
+	// newer than it, in the same run, has already said something later.
+	// Without that, a delayed success could clear the reason of an outage
+	// that began after it.
 	if _, err := tx.Exec(
-		`INSERT INTO target_state (target_id, session_id, generation, status, observed_ms, source, input_request_visibility, reason, machine)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO target_state (target_id, session_id, generation, status, observed_ms, source, input_request_visibility, reason, machine, reason_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(target_id) DO UPDATE SET
 			session_id  = excluded.session_id,
-			generation  = excluded.generation,
 			status      = excluded.status,
 			observed_ms = excluded.observed_ms,
 			source      = excluded.source,
 			input_request_visibility = excluded.input_request_visibility,
-			reason      = excluded.reason,
+			reason      = CASE WHEN excluded.generation > target_state.generation OR excluded.reason_ms > target_state.reason_ms
+			                   THEN excluded.reason ELSE target_state.reason END,
+			reason_ms   = CASE WHEN excluded.generation > target_state.generation OR excluded.reason_ms > target_state.reason_ms
+			                   THEN excluded.reason_ms ELSE target_state.reason_ms END,
+			generation  = excluded.generation,
 			machine     = excluded.machine`,
-		e.TargetID, e.SessionID, e.Generation, e.Status, e.At.UnixMilli(), e.Source, visibility, e.Reason, e.Machine,
+		e.TargetID, e.SessionID, e.Generation, e.Status, e.At.UnixMilli(), e.Source, visibility, e.Reason, e.Machine, e.At.UnixMilli(),
 	); err != nil {
 		return false, fmt.Errorf("write target state: %w", err)
+	}
+	return true, nil
+}
+
+// applyReason records why a target is not currently observed, from an
+// observation that asserts no status, under the same ordering applyState
+// uses: a straggler from a replaced run, or one overtaken within the same run
+// by anything recorded later, changes nothing.
+//
+// A target with no state yet gets a row carrying only the reason. No status
+// is invented for it: status stays empty, and its observed time zero, so
+// status reports the reason and nothing it did not observe — and the first
+// real observation is never overtaken by it.
+func applyReason(tx *sql.Tx, e Event) (bool, error) {
+	at := e.At.UnixMilli()
+	var curGen, curObserved, curReason int64
+	err := tx.QueryRow(
+		`SELECT generation, observed_ms, reason_ms FROM target_state WHERE target_id = ?`, e.TargetID,
+	).Scan(&curGen, &curObserved, &curReason)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.Exec(
+			`INSERT INTO target_state (target_id, session_id, generation, status, observed_ms, source, input_request_visibility, reason, machine, reason_ms)
+			 VALUES (?, '', ?, '', 0, ?, 'unavailable', ?, ?, ?)`,
+			e.TargetID, e.Generation, e.Source, e.Reason, e.Machine, at,
+		); err != nil {
+			return false, fmt.Errorf("record reason: %w", err)
+		}
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("read target state: %w", err)
+	case e.Generation < curGen:
+		return false, nil // a run that has since been replaced
+	case at <= curReason:
+		return false, nil // a reason recorded later is already there
+	case e.Generation == curGen && at <= curObserved:
+		return false, nil // overtaken by a later observation of this run
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE target_state SET reason = ?, reason_ms = ? WHERE target_id = ?`,
+		e.Reason, at, e.TargetID,
+	); err != nil {
+		return false, fmt.Errorf("record reason: %w", err)
 	}
 	return true, nil
 }
