@@ -97,3 +97,32 @@ func TestClaudeDoesNotFollowARecordThatIsNotLive(t *testing.T) {
 		t.Fatalf("Follow = %+v onto a record that is not live", got.Follow)
 	}
 }
+
+// A target pointed at another session — by watch sync, or removed and added
+// again — must not inherit the process learned for the old one. Otherwise
+// "the new id is not there, and the old process now answers as the old id"
+// reads as a follow straight back to the worker it was moved away from.
+func TestARetargetedWatchIsNotFollowedBackToTheOldSession(t *testing.T) {
+	sessions := []claude.Session{{SessionID: "A", PID: 100, ProcStart: "P", Status: "busy", Live: true}}
+	o := &Claude{
+		List:        func() ([]claude.Session, error) { return sessions, nil },
+		SameProcess: func(int, string) bool { return true },
+	}
+
+	if got, _ := o.Observe(claudeTarget("A")); got.Follow != nil {
+		t.Fatalf("followed %+v while A was present", got.Follow)
+	}
+
+	// The same target id, now pointed at B, which has not appeared.
+	got, _ := o.Observe(claudeTarget("B"))
+	if got.Follow != nil {
+		t.Fatalf("Follow = %+v: the retargeted watch was followed back to A", got.Follow)
+	}
+
+	// A genuine /clear of the session the process was learned for is still
+	// followed.
+	sessions = []claude.Session{{SessionID: "A2", PID: 100, ProcStart: "P", Status: "busy", Live: true}}
+	if got, _ := o.Observe(claudeTarget("A")); got.Follow == nil || got.Follow.ToSessionID != "A2" {
+		t.Errorf("Follow = %+v, want A followed to A2", got.Follow)
+	}
+}

@@ -42,10 +42,18 @@ type Claude struct {
 	seen map[string]processIdentity
 }
 
-// processIdentity is a pid and the start time that makes it unambiguous.
+// processIdentity is a pid and the start time that makes it unambiguous,
+// and the session it was seen holding.
+//
+// The session is part of it. A target id can be pointed at another session —
+// by watch sync, or by removing and re-adding it — and the process learned for
+// the old one says nothing about the new one: following "the new id is gone,
+// and the process the target last had now reports another" would follow the
+// retargeted watch straight back to the worker it was moved away from.
 type processIdentity struct {
 	pid       int
 	procStart string
+	sessionID string
 }
 
 // NewClaude builds an observer over the real session registry and, where
@@ -128,7 +136,7 @@ func (c *Claude) remember(targetID string, s claude.Session) {
 	if c.seen == nil {
 		c.seen = map[string]processIdentity{}
 	}
-	c.seen[targetID] = processIdentity{pid: s.PID, procStart: s.ProcStart}
+	c.seen[targetID] = processIdentity{pid: s.PID, procStart: s.ProcStart, sessionID: s.SessionID}
 }
 
 // successor finds the session a target's process now reports, when the id
@@ -151,7 +159,12 @@ func (c *Claude) remember(targetID string, s claude.Session) {
 func (c *Claude) successor(target config.Target, sessions []claude.Session) (claude.Session, bool) {
 	identity := processIdentity{pid: target.Attachment.PID, procStart: target.Attachment.ProcStart}
 	if identity.pid == 0 || identity.procStart == "" {
-		identity = c.seen[target.ID]
+		// Learned identity only for the session it was learned from.
+		if seen := c.seen[target.ID]; seen.sessionID == target.Attachment.SessionID {
+			identity = seen
+		} else {
+			identity = processIdentity{}
+		}
 	}
 	if identity.pid == 0 || identity.procStart == "" {
 		return claude.Session{}, false

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -374,4 +375,40 @@ func TestASyncSentWithTheRequestIsNotReportedAsTheFiles(t *testing.T) {
 	if st.ConfigSync.LastError == "" {
 		t.Error("last_error empty after the file was refused")
 	}
+}
+
+// flakyObserver sees the session, then loses the source it reads.
+type flakyObserver struct{ failing atomic.Bool }
+
+func (f *flakyObserver) Observe(config.Target) (monitor.Sighting, error) {
+	now := time.Now()
+	if f.failing.Load() {
+		return monitor.Sighting{Observation: policy.Observation{
+			Status: policy.StatusUnknown, Reason: policy.ReasonSourceUnreadable,
+		}}, errors.New("registry unreadable")
+	}
+	return monitor.Sighting{
+		Observation:     policy.Observation{Live: true, Status: policy.StatusIdle, StatusKnown: true, StatusSince: now, LastActivityAt: now, ObservedAt: now},
+		SessionIdentity: "s@P",
+	}, nil
+}
+
+// Why a target is not current must reach status, through the monitor and the
+// store — not only the adapter's own return value.
+func TestStatusCarriesWhyAnObservationFailed(t *testing.T) {
+	obs := &flakyObserver{}
+	_, opts := start(t, obs)
+	waitFor(t, "a good observation", func() bool { return targets(t, opts.SocketPath)[0].Status == policy.StatusIdle })
+
+	obs.failing.Store(true)
+	waitFor(t, "the reason to reach status", func() bool {
+		return targets(t, opts.SocketPath)[0].Reason == policy.ReasonSourceUnreadable
+	})
+	ts := targets(t, opts.SocketPath)[0]
+	if ts.Status != policy.StatusIdle || ts.StatusIsCurrent {
+		t.Errorf("status = %q current=%v, want the last status kept and marked not current", ts.Status, ts.StatusIsCurrent)
+	}
+
+	obs.failing.Store(false)
+	waitFor(t, "the reason to clear", func() bool { return targets(t, opts.SocketPath)[0].Reason == "" })
 }

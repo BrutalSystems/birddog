@@ -422,6 +422,14 @@ was never asked to raise.
 | `idle` | The session reported idle for longer than the grace period. Opt-in |
 | `no_progress` | The session asserts work, and nothing has happened for a long time |
 
+**At most one incident is open per target, condition and generation**, and it
+is delivered once while it stays open; repeated passes that still see the
+condition only refresh it. A condition that ends and comes back is a new
+incident, delivered again, in the same generation: a session that waits for
+input, is answered and runs, then waits again raises `input_requested` twice.
+A consumer deduplicating alerts should key on the incident id, not on the
+target and generation.
+
 `no_progress` exists because `quiet` is deliberately suppressed while a
 provider reports work: a provider need not restamp a status that has not
 changed, so a legitimately busy session carries an old timestamp, and reading
