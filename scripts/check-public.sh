@@ -44,7 +44,9 @@ GREP=/usr/bin/grep
 GENERIC='(/Users|/home)/[A-Za-z0-9._-]+/'
 GENERIC_ALLOW='(/Users|/home)/(x|u|me|you|user|someone|a-user[A-Za-z0-9-]*|runner|USER|<[^>]*>)/'
 EMAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
-EMAIL_ALLOW='[A-Za-z0-9._%+-]*noreply@[A-Za-z0-9.-]+|[A-Za-z0-9._%+-]+@example\.(com|org|net)'
+# Each allowance must match a whole address: the character after it may not
+# continue the domain, so an address at example.company is not excused.
+EMAIL_ALLOW='[A-Za-z0-9._%+-]*noreply@[A-Za-z0-9.-]+|[A-Za-z0-9._%+-]+@example\.(com|org|net)([^A-Za-z0-9.-]|$)'
 TOKENS='AKI[A][0-9A-Z]{16}|gh[p]_[A-Za-z0-9]{20,}|gh[o]_[A-Za-z0-9]{20,}|github[_]pat_[A-Za-z0-9_]{20,}|np[m]_[A-Za-z0-9]{30,}|sk[-]ant-[A-Za-z0-9_-]{10,}|xo[x][abp]-[A-Za-z0-9-]{10,}|BEGI[N] [A-Z ]*PRIVATE KEY'
 
 fail() {
@@ -59,7 +61,13 @@ text=$work/text
 
 # --- the private term list -------------------------------------------------
 
-terms_file=${PUBLIC_TERMS_FILE:-$(git config --get public.termsFile 2>/dev/null || true)}
+terms_file=${PUBLIC_TERMS_FILE:-}
+if [ -z "$terms_file" ]; then
+	# git config exits 1 when the key is unset; anything else is an error.
+	rc=0
+	terms_file=$(git config --get public.termsFile) || rc=$?
+	[ "$rc" -le 1 ] || fail "cannot read git config public.termsFile"
+fi
 terms_file=${terms_file:-$HOME/.config/public-terms.txt}
 case $terms_file in "~/"*) terms_file=$HOME/${terms_file#"~/"} ;; esac
 : >"$work/terms"
@@ -153,10 +161,14 @@ case ${1:-} in
 --tree)
 	git_to "$work/files" ls-files -z
 	if [ -s "$work/files" ]; then
+		# grep exits 1 for a file with no text lines (empty or binary), which
+		# is fine, and 2 for one it cannot read, which is not. xargs reports
+		# those differently on BSD and GNU, so each grep's status is settled
+		# inside the wrapper and only a real failure leaves it non-zero.
 		rc=0
-		xargs -0 "$GREP" -nIH '' <"$work/files" >"$work/tree" || rc=$?
-		# grep exits 1 when a file is empty or binary; xargs reports that as 123.
-		[ "$rc" -eq 0 ] || [ "$rc" -eq 123 ] || fail "cannot read the tracked files"
+		xargs -0 sh -c '"$0" -nIH "" "$@"; s=$?; [ "$s" -le 1 ] || exit 255' "$GREP" \
+			<"$work/files" >"$work/tree" || rc=$?
+		[ "$rc" -eq 0 ] || fail "cannot read the tracked files"
 		label "tree" "$work/tree"
 	fi
 	;;
@@ -186,7 +198,7 @@ match() {
 
 # Allowed placeholders are blanked one match at a time, so a placeholder on a
 # line does not excuse a real path or address beside it.
-sed -E "s#$GENERIC_ALLOW#<placeholder>/#g; s#$EMAIL_ALLOW#<placeholder>#g" "$text" >"$work/generic" ||
+sed -E "s#$GENERIC_ALLOW#<placeholder>/#g; s#$EMAIL_ALLOW#<placeholder>\2#g" "$text" >"$work/generic" ||
 	fail "cannot blank placeholders"
 match "$work/generic" -E "$GENERIC"
 match "$work/generic" -E "$EMAIL"
