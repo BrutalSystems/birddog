@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * The shared standard says its copies must read the same, and nothing checks
- * it. Mike has ruled the three repositories stay independent — no CI step
+ * it. The three repositories are independent by design — no CI step
  * comparing them, no shared file the others link to — so nothing can check
- * that claim across repos without reintroducing the coupling he vetoed.
+ * that claim across repos without reintroducing that coupling.
  *
  * What a repository CAN check is its own copy, and mechanical drift is what
  * actually happened three times this week: two-repository wording surviving a
@@ -50,10 +50,9 @@ describe('the shared CI/CD standard', () => {
     expect(stale, 'wording from when there were only two repositories').toEqual([]);
   });
 
-  // Mike ruled the three repositories independent. A copy claiming they say
-  // the same thing contradicts that ruling and cannot be true of anything
-  // nobody checks — this file made that claim in its own header for a day
-  // after I reported it removed.
+  // The three repositories are independent by design. A copy claiming they
+  // say the same thing contradicts that and cannot be true of anything
+  // nobody checks.
   //
   // Both halves matter. Banning the claim alone would make deleting the
   // paragraph the cheapest way to pass, so the statement that replaces it is

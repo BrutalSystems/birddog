@@ -109,11 +109,11 @@ func executableBinary(t *testing.T) string {
 func TestSettingsPathFollowsClaudeConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CLAUDE_CONFIG_DIR", "~/.claude-jacketlabs")
+	t.Setenv("CLAUDE_CONFIG_DIR", "~/.claude-work")
 
 	result := installJSON(t, "--dry-run", "--binary", executableBinary(t))
 
-	want := filepath.Join(home, ".claude-jacketlabs", "settings.json")
+	want := filepath.Join(home, ".claude-work", "settings.json")
 	if result.SettingsPath != want {
 		t.Errorf("settings_path = %q, want %q", result.SettingsPath, want)
 	}

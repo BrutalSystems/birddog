@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse a push that would publish private terms, paths, emails or tokens.
+# Installed by `make hooks`; see scripts/check-public.sh.
+exec "$(git rev-parse --show-toplevel)/scripts/check-public.sh" --pre-push

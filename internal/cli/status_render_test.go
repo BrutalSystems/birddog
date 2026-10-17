@@ -14,7 +14,7 @@ func TestStatusTextShowsPolicyAndWhere(t *testing.T) {
 	until := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
 	err := renderStatus(&out, daemon.StatusResult{
-		InstanceID: "bd-1", Name: "cos-masters",
+		InstanceID: "bd-1", Name: "orchestrator",
 		Targets: []daemon.TargetStatus{
 			{
 				ID: "worker-1", Provider: "claude", Status: "idle", StatusIsCurrent: true,
@@ -80,7 +80,7 @@ func TestSyncTextListsEachChange(t *testing.T) {
 func TestStatusTextSaysPolicyIsUnknownForAnOlderInstance(t *testing.T) {
 	var out bytes.Buffer
 	if err := renderStatus(&out, daemon.StatusResult{
-		InstanceID: "bd-1", Name: "cos-masters",
+		InstanceID: "bd-1", Name: "orchestrator",
 		Targets: []daemon.TargetStatus{{ID: "worker-1", Provider: "claude", Status: "idle", StatusIsCurrent: true}},
 	}); err != nil {
 		t.Fatal(err)

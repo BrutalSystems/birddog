@@ -29,7 +29,7 @@ profile's directory. birddog reads:
    a `:`-separated list (`~/` is expanded):
 
 ```sh
-export BIRDDOG_CLAUDE_CONFIG_DIRS=~/.claude-arm:~/.claude-armdev:~/.claude-springthrough:~/.claude-jacketlabs:~/.claude-williams
+export BIRDDOG_CLAUDE_CONFIG_DIRS=~/.claude-work:~/.claude-home
 ```
 
 Which directories are profiles is stated rather than guessed: a pattern such as
@@ -657,7 +657,7 @@ A leading `~` is expanded in each. A profile launched with its own
 there do nothing for it. To cover several profiles, install into each:
 
 ```sh
-for p in arm armdev springthrough jacketlabs williams; do
+for p in work home; do
   birddog hooks install --config-dir ~/.claude-$p
 done
 ```

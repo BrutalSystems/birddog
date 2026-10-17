@@ -1,5 +1,5 @@
 # Run `make check` before every commit: it is exactly what CI runs.
-.PHONY: check fmt vet fixtures test typecheck-plugin test-plugin build
+.PHONY: check fmt vet fixtures test typecheck-plugin test-plugin build hooks public
 
 # Everything CI gates on. It was Go-only once, so a green `make check` could
 # still push a red build — the plugin's typecheck and suite ran nowhere local.
@@ -36,3 +36,12 @@ test-plugin:
 
 build:
 	@go build -o bin/birddog ./cmd/birddog
+
+# This repository is public. `hooks` makes every push run check-public.sh over
+# what it would publish; `public` runs the same check by hand.
+hooks:
+	@git config core.hooksPath scripts/githooks
+	@echo "pre-push hook installed: scripts/githooks/pre-push"
+
+public:
+	@scripts/check-public.sh

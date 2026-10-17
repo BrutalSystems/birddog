@@ -75,3 +75,13 @@ exists to prevent. Full detail in `RELEASING.md`.
 
 `make check` — exactly what CI runs: gofmt, `go vet`, `go test ./... -race`,
 the plugin typecheck and the vitest suite.
+
+## This repository is public
+
+Everything pushed here — code, comments, docs, tests, commit messages, branch
+names, PR and issue text, release notes — is read by strangers. Run
+`make hooks` once per clone: it installs a pre-push hook that runs
+`scripts/check-public.sh` over the outgoing diff and commit messages and
+refuses the push on a hit. The private term list it reads lives outside the
+repository (`$PUBLIC_TERMS_FILE`, `git config public.termsFile`, or
+`~/.config/public-terms.txt`) and never goes in it.
