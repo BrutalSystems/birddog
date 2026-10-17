@@ -226,6 +226,11 @@ func (s *Store) TargetState(targetID string) (TargetStateRecord, bool, error) {
 	if err != nil {
 		return TargetStateRecord{}, false, fmt.Errorf("target state: %w", err)
 	}
-	r.ObservedAt = time.UnixMilli(observedMS).UTC()
+	// Zero is what a row holding only a reason stores: nothing was observed.
+	// Read as the zero time, not as the Unix epoch, which every reader would
+	// otherwise print as an observation made in 1970.
+	if observedMS != 0 {
+		r.ObservedAt = time.UnixMilli(observedMS).UTC()
+	}
 	return r, true, nil
 }
