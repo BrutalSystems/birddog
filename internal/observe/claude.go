@@ -50,11 +50,11 @@ type processIdentity struct {
 
 // NewClaude builds an observer over the real session registry and, where
 // hooks are installed, the state they record.
-func NewClaude(registryDir, hookDir string) *Claude {
+func NewClaude(registries func() []string, hookDir string) *Claude {
 	store := &hooks.Store{Dir: hookDir}
 	return &Claude{
 		List: func() ([]claude.Session, error) {
-			return claude.List(claude.Params{RegistryDir: registryDir})
+			return claude.List(claude.Params{Registries: registries})
 		},
 		HookState: func(sessionID string) (hooks.State, error) {
 			return store.Read(sessionID)
@@ -83,7 +83,8 @@ var statusMap = map[string]string{
 // Observe reports the current state of one Claude Code session.
 func (c *Claude) Observe(target config.Target) (monitor.Sighting, error) {
 	sessions, err := c.List()
-	if err != nil {
+	partial := claude.IsPartial(err)
+	if err != nil && !partial {
 		return unreadable(policy.ReasonSourceUnreadable), fmt.Errorf("read Claude Code session registry: %w", err)
 	}
 
@@ -111,6 +112,11 @@ func (c *Claude) Observe(target config.Target) (monitor.Sighting, error) {
 		}
 		hookErr := c.enrich(&sighting, s)
 		return sighting, hookErr
+	}
+	if partial {
+		// Not found, in a listing missing a registry that could not be
+		// read. The session may be in that one, so nothing is concluded.
+		return unreadable(policy.ReasonSourceUnreadable), fmt.Errorf("read Claude Code session registry: %w", err)
 	}
 	return c.absent(target)
 }
@@ -369,6 +375,6 @@ func init() {
 	register("claude", func(d Deps) (monitor.Observer, error) {
 		// Wrapped, not replaced: the registry adapter answers first on every
 		// pass, and the transcript only adds what it cannot carry.
-		return transcript.Watch(NewClaude(d.ClaudeRegistryDir, d.HookStateDir), d.ProjectsDirs), nil
+		return transcript.Watch(NewClaude(d.ClaudeRegistries, d.HookStateDir), d.ProjectsDirs), nil
 	})
 }

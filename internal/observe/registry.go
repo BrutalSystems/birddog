@@ -9,10 +9,12 @@ import (
 // Deps is everything any adapter needs to be built. Supplied by the CLI,
 // which is the only layer that knows where things live on disk.
 type Deps struct {
-	ClaudeRegistryDir string
-	HookStateDir      string
-	CodexLockDir      string
-	OpencodeRecords   string
+	// ClaudeRegistries names the session registries to read, afresh on
+	// every pass; see claude.Registries.
+	ClaudeRegistries func() []string
+	HookStateDir     string
+	CodexLockDir     string
+	OpencodeRecords  string
 
 	// ProjectsDirs is every config profile's transcripts directory. A list,
 	// not one path: a registry directory may aggregate several profiles by

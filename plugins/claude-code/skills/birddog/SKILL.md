@@ -26,18 +26,14 @@ birddog discover --json   # every attachable session: session_id, pid, proc_star
 birddog doctor            # what each runtime can and cannot be observed for, here
 ```
 
-**`discover` is empty, or misses sessions you know are live?** For Claude Code
-birddog reads only `~/.claude/sessions`. A session running under a different
-`CLAUDE_CONFIG_DIR` registers in `$CLAUDE_CONFIG_DIR/sessions` instead:
-
-```sh
-birddog discover --registry-dir "$CLAUDE_CONFIG_DIR/sessions"
-```
-
-That flag exists on `discover` only. A running instance and the `--owner`
-check always read `~/.claude/sessions`, so such a session cannot be watched or
-used as an owner until its registry record is visible there. Say so rather
-than starting an instance that will report it lost.
+**`discover` is empty, or misses sessions you know are live?** Claude Code
+registers a session under `$CLAUDE_CONFIG_DIR/sessions`. birddog reads
+`~/.claude/sessions`, `$CLAUDE_CONFIG_DIR/sessions`, and each profile listed in
+`BIRDDOG_CLAUDE_CONFIG_DIRS` (`:`-separated, e.g.
+`~/.claude-work:~/.claude-home`) — in `discover`, in a running instance, for
+`--owner` and for the claude-inbox route. A session under a profile not in that
+list cannot be watched: add the profile, in the environment the instance is
+started from. `discover --registry-dir DIR` lists one directory.
 
 A hand-started opencode TUI never appears: opencode is observable only with the
 `@brutalsystems/birddog-opencode` plugin loaded. Codex threads show

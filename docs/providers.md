@@ -50,7 +50,8 @@ process identity.
 The registry lives under `$CLAUDE_CONFIG_DIR/sessions/`; `~/.claude/sessions/`
 is the default profile's. Some sessions of other profiles are also symlinked
 there and some are not — a session launched under a profile by `muster run`
-was not — so birddog 3.0 sees another profile's session only when it is.
+was not. birddog therefore reads each profile's own registry, from a stated
+list; see `discover` in [cli.md](./cli.md).
 
 Each record carries the session id, working directory, process id and process
 start time, a name, the runtime status with its own timestamp, the kind of

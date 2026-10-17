@@ -2,6 +2,8 @@ package claudeinbox
 
 import (
 	"os"
+
+	"github.com/BrutalSystems/birddog/internal/discover/claude"
 	"path/filepath"
 	"testing"
 )
@@ -28,7 +30,7 @@ func TestRecipientIsFollowedAcrossANewSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pointed at the fixture registry rather than the real one.
-	c.Resolve = trackedResolver(dir, "s1")
+	c.Resolve = trackedResolver(claude.Params{RegistryDir: dir}, "s1")
 
 	if _, err := c.Resolve(); err != nil {
 		t.Fatalf("resolve before /clear: %v", err)
@@ -53,7 +55,7 @@ func TestFirstAlertAfterAnEarlyClearStillLands(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resolve := trackedResolver(dir, "s1")
+	resolve := trackedResolver(claude.Params{RegistryDir: dir}, "s1")
 	writeRecord(t, dir, "s2")
 
 	got, err := resolve()
@@ -62,5 +64,22 @@ func TestFirstAlertAfterAnEarlyClearStillLands(t *testing.T) {
 	}
 	if got.SocketPath != "/tmp/x.sock" || got.PeerToken != "tok" {
 		t.Errorf("recipient = %+v, want the same process", got)
+	}
+}
+
+// A session's record may be reached through a link from another profile's
+// registry. Its credential is beside the real record.
+func TestTheCredentialIsReadBesideTheRealRecord(t *testing.T) {
+	real, mirror := t.TempDir(), t.TempDir()
+	writeRecord(t, real, "s1")
+	if err := os.WriteFile(filepath.Join(real, "7.abc123.key"), []byte(`{"peerToken": "tok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(real, "7.json"), filepath.Join(mirror, "7.json")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := trackedResolver(claude.Params{Registries: func() []string { return []string{mirror} }}, "s1")()
+	if err != nil || got.PeerToken != "tok" {
+		t.Errorf("resolve = %+v, %v; want the token beside the real record", got, err)
 	}
 }

@@ -37,6 +37,15 @@ type Session struct {
 	UpdatedAt       time.Time
 	StatusUpdatedAt time.Time
 
+	// Dir is the registry directory the record lives in. Where the record
+	// was reached through a link, it is the directory of the file linked to:
+	// the credential file belonging to the session is beside the real
+	// record, not necessarily beside the link.
+	Dir string
+
+	// linked says the record was read through a symbolic link.
+	linked bool
+
 	// Live reports whether the session's socket answered a connect probe.
 	// The registry record can outlive the process that wrote it, so this —
 	// not the record's existence — is the liveness test.
@@ -52,6 +61,10 @@ func (s Session) StatusIsCurrent() bool { return s.Live }
 // need no real sockets and no real processes.
 type Params struct {
 	RegistryDir string
+
+	// Registries, when set, is called on every listing for the directories
+	// to read, and RegistryDir is ignored. See Registries.
+	Registries func() []string
 
 	// Probe reports whether a session's socket accepts a connection.
 	// Defaults to ProbeSocket.
@@ -94,8 +107,19 @@ func DefaultRegistryDir() (string, error) {
 	return filepath.Join(home, ".claude", "sessions"), nil
 }
 
-// List returns the sessions described by the registry directory.
+// List returns the sessions described by the registry directory, or by every
+// directory Registries names.
+//
+// With Registries set, an error that IsPartial comes with sessions that are
+// real and may be incomplete.
 func List(p Params) ([]Session, error) {
+	if p.Registries != nil {
+		return listMany(p, p.Registries())
+	}
+	return listDir(p, p.RegistryDir)
+}
+
+func listDir(p Params, dir string) ([]Session, error) {
 	probe := p.Probe
 	if probe == nil {
 		probe = ProbeSocket
@@ -105,7 +129,7 @@ func List(p Params) ([]Session, error) {
 		sameProcess = proc.SameProcess
 	}
 
-	entries, err := os.ReadDir(p.RegistryDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +139,16 @@ func List(p Params) ([]Session, error) {
 		if !recordName.MatchString(e.Name()) {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(p.RegistryDir, e.Name()))
+		path := filepath.Join(dir, e.Name())
+		recordDir, linked := dir, e.Type()&os.ModeSymlink != 0
+		if linked {
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				continue // a link to nothing describes nothing
+			}
+			recordDir = filepath.Dir(real)
+		}
+		b, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -137,6 +170,8 @@ func List(p Params) ([]Session, error) {
 			SocketPath:      r.MessagingSocketPath,
 			UpdatedAt:       time.UnixMilli(r.UpdatedAt),
 			StatusUpdatedAt: time.UnixMilli(r.StatusUpdatedAt),
+			Dir:             recordDir,
+			linked:          linked,
 			// Live requires both: a socket file can outlive the process
 			// that bound it, and the PID can meanwhile be reused.
 			Live: probe(r.MessagingSocketPath) && sameProcess(r.PID, r.ProcStart),
