@@ -293,6 +293,8 @@ func (c *Claude) sighting(s claude.Session) monitor.Sighting {
 		// The process start is part of the identity, so a restarted session
 		// is a new generation rather than a continuation of the old run.
 		SessionIdentity: s.SessionID + "@" + s.ProcStart,
+		PID:             s.PID,
+		ProcStart:       s.ProcStart,
 	}
 }
 

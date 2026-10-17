@@ -32,6 +32,13 @@ type Sighting struct {
 	// target to the new id and records that it did, rather than reporting
 	// the old id as lost.
 	Follow *Follow
+
+	// PID and ProcStart identify the process that answered, where the
+	// adapter knows it. Kept so a caller can say where the session lives —
+	// its terminal, its tmux pane — for a target configured with only a
+	// session id.
+	PID       int
+	ProcStart string
 }
 
 // Follow says a target's session continued under a new id.
@@ -108,6 +115,25 @@ type Monitor struct {
 	// re-added.
 	follows       map[string]map[string]store.Follow
 	followsLoaded bool
+
+	// processes is the process last seen answering for each target. Only
+	// what a live sighting reported; a target that has gone keeps the last
+	// one, and Process says so.
+	processes map[string]Process
+}
+
+// Process is the process last seen answering for a target.
+type Process struct {
+	PID       int
+	ProcStart string
+	Live      bool
+}
+
+// Process returns the process last seen answering for a target. Callers hold
+// whatever guards a pass; the daemon reads it under the same lock.
+func (m *Monitor) Process(targetID string) (Process, bool) {
+	p, ok := m.processes[targetID]
+	return p, ok
 }
 
 // wakeThreshold is how far the wall and monotonic clocks may diverge before a
@@ -187,6 +213,7 @@ func (m *Monitor) Tick(now time.Time) error {
 		if observedSomething(sightings[i]) {
 			learned++
 		}
+		m.noteProcess(m.cfg.Targets[i].ID, sightings[i])
 	}
 
 	// Every target unobservable in the same pass is not evidence about every
@@ -209,6 +236,22 @@ func (m *Monitor) Tick(now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func (m *Monitor) noteProcess(targetID string, s Sighting) {
+	if m.processes == nil {
+		m.processes = map[string]Process{}
+	}
+	if s.PID != 0 {
+		m.processes[targetID] = Process{PID: s.PID, ProcStart: s.ProcStart, Live: s.Live}
+		return
+	}
+	if p, ok := m.processes[targetID]; ok && !s.Live {
+		// Nothing answered this pass. The process is the last one seen, and
+		// is no longer known to be there.
+		p.Live = false
+		m.processes[targetID] = p
+	}
 }
 
 // loadFollows reads the recorded follows once, on the first pass.

@@ -14,7 +14,7 @@ import (
 
 func runWatch(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("watch needs a subcommand: add, remove or update")
+		return fmt.Errorf("watch needs a subcommand: add, remove, update or sync")
 	}
 	switch args[0] {
 	case "add":
@@ -23,6 +23,8 @@ func runWatch(args []string, stdout io.Writer) error {
 		return runWatchRemove(args[1:], stdout)
 	case "update":
 		return runWatchUpdate(args[1:], stdout)
+	case "sync":
+		return runWatchSync(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown watch subcommand %q", args[0])
 	}
@@ -49,13 +51,20 @@ func runWatchAdd(args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("read target: %w", err)
 	}
-	var target config.Target
-	if err := json.Unmarshal(data, &target); err != nil {
-		return fmt.Errorf("parse target: %w", err)
+	// Parsed here only to refuse a bad file before anything is sent and to
+	// name the target in the reply. The instance parses the same bytes
+	// itself: thresholds do not survive the in-memory encoding.
+	target, err := config.ParseTarget(data)
+	if err != nil {
+		return err
 	}
 
 	var res daemon.WatchResult
-	if err := ipc.Call(socket, "watch.add", daemon.WatchAddParams{Target: target, IdempotencyKey: *key}, &res); err != nil {
+	if err := ipc.Call(socket, "watch.add", daemon.WatchAddParams{
+		// Both forms: an instance started by an earlier build reads only
+		// Target, and must keep answering until it is restarted.
+		Spec: data, Target: target, IdempotencyKey: *key,
+	}, &res); err != nil {
 		return err
 	}
 	return emit(stdout, *asJSON, res, func(w io.Writer) error {
@@ -162,4 +171,73 @@ func runWatchUpdate(args []string, stdout io.Writer) error {
 		fmt.Fprintf(w, "Thresholds apply from now on; what was already observed is unchanged.\n")
 		return nil
 	})
+}
+
+func runWatchSync(args []string, stdout io.Writer) error {
+	fs := flags("watch sync")
+	id := fs.String("instance", "", "instance id")
+	key := fs.String("idempotency-key", "", "retry-safe key: repeating it returns the original result")
+	file := fs.String("file", "", "configuration to match (default: the file the instance was started with)")
+	dryRun := fs.Bool("dry-run", false, "show what would change without changing it")
+	asJSON := fs.Bool("json", false, "emit JSON for programmatic use")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	socket, err := instanceSocket(*id)
+	if err != nil {
+		return err
+	}
+
+	params := daemon.WatchSyncParams{DryRun: *dryRun, IdempotencyKey: *key}
+	if *file != "" {
+		data, err := os.ReadFile(*file)
+		if err != nil {
+			return fmt.Errorf("read configuration: %w", err)
+		}
+		// Refused here as well as by the instance, so a bad file is named
+		// before anything is sent.
+		if _, err := config.Parse(data); err != nil {
+			return err
+		}
+		params.Config = data
+	}
+
+	var res daemon.WatchSyncResult
+	if err := ipc.Call(socket, "watch.sync", params, &res); err != nil {
+		return err
+	}
+	return emit(stdout, *asJSON, res, func(w io.Writer) error {
+		return renderSync(w, res)
+	})
+}
+
+func renderSync(w io.Writer, res daemon.WatchSyncResult) error {
+	switch {
+	case !res.Changed && res.DryRun:
+		fmt.Fprintf(w, "Dry run: %s matches what is watched. Nothing would change.\n", res.Source)
+	case !res.Changed:
+		fmt.Fprintf(w, "%s matches what is watched. Nothing changed; revision %d.\n", res.Source, res.ConfigRevision)
+	case res.DryRun:
+		fmt.Fprintf(w, "Dry run against %s. Nothing was changed; this is what would be:\n", res.Source)
+	default:
+		fmt.Fprintf(w, "Synced from %s. %d target(s), revision %d.\n", res.Source, res.Targets, res.ConfigRevision)
+	}
+	for _, line := range []struct {
+		verb string
+		ids  []string
+	}{{"added", res.Added}, {"removed", res.Removed}, {"updated", res.Updated}, {"unchanged", res.Unchanged}} {
+		for _, id := range line.ids {
+			fmt.Fprintf(w, "  %-9s %s\n", line.verb, id)
+		}
+	}
+	if res.RetentionChanged {
+		fmt.Fprintf(w, "  retention changed to the file's\n")
+	}
+	for _, n := range res.NotApplied {
+		fmt.Fprintf(w, "  not applied: %s\n", n)
+	}
+	if len(res.Removed) > 0 && !res.DryRun {
+		fmt.Fprintf(w, "Removed sessions were not touched, and what was observed of them is kept.\n")
+	}
+	return nil
 }

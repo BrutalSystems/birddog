@@ -75,6 +75,12 @@ type Config struct {
 	Notification  *Notification `json:"notification,omitempty"`
 	Retention     *Retention    `json:"retention,omitempty"`
 	Targets       []Target      `json:"targets"`
+
+	// FollowFile makes the instance re-read this file whenever it changes
+	// and watch what it then says, as `watch sync` does on request. Off by
+	// default: an instance started from a file has always kept the watch
+	// list it started with until told otherwise.
+	FollowFile bool `json:"follow_file,omitempty"`
 }
 
 // Notification is where this instance's alerts are delivered.
@@ -234,6 +240,7 @@ type configWire struct {
 	Notification  *Notification  `json:"notification,omitempty"`
 	Retention     *retentionWire `json:"retention,omitempty"`
 	Targets       []targetWire   `json:"targets"`
+	FollowFile    bool           `json:"follow_file,omitempty"`
 }
 
 // Parse reads and validates a configuration.
@@ -270,6 +277,7 @@ func Parse(data []byte) (*Config, error) {
 		Name:          wire.Name,
 		Notification:  wire.Notification,
 		Retention:     retention,
+		FollowFile:    wire.FollowFile,
 	}
 
 	seen := map[string]bool{}
@@ -303,6 +311,24 @@ func ParseTarget(data []byte) (Target, error) {
 		return Target{}, fmt.Errorf("target: %w", err)
 	}
 	return buildTarget(tw)
+}
+
+// FillDefaults gives a policy built in memory the defaults a file gets for
+// what it leaves out.
+//
+// Only for values that cannot have been meant. A nil alert list is an absent
+// one, which a file reads as the defaults; an explicit empty list is kept, as
+// a file keeps it. A zero quiet threshold is refused in a file, so zero here
+// can only mean it was never set. Idle grace may legitimately be zero, and
+// no_progress is off at zero by design, so neither is touched.
+func FillDefaults(p Policy) Policy {
+	if p.AlertOn == nil {
+		p.AlertOn = append([]string(nil), defaultAlerts...)
+	}
+	if p.QuietAfter <= 0 {
+		p.QuietAfter = DefaultQuietAfter
+	}
+	return p
 }
 
 // ValidateTarget checks a target built in memory, so a watch added at runtime

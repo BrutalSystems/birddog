@@ -122,7 +122,12 @@ A hand-started opencode TUI never appears: opencode is observable only with the
 5. **Adjust without restarting**: `birddog watch add --instance <id> --file
    target.json`, `watch remove --target worker-1`, `watch update --target
    worker-1 --expect-quiet-for 20m --reason "test suite"` (silences quiet/idle
-   only; exit, input and loss still surface).
+   only; exit, input and loss still surface). If the watch list lives in a
+   file, edit the file and run `birddog watch sync --instance <id>` (or
+   `--file other.json`; `--dry-run` first): it adds, removes and updates to
+   match, leaving unchanged targets' history alone. `"follow_file": true` in
+   the config makes the instance do that by itself on every save. Verify a
+   change with `status --json`: each target carries its `policy`.
 
 6. **Stop it when the watching is done**: `birddog stop --instance <id>`.
    `birddog list` shows instances (`RUNNING` is decided by the process, not
@@ -137,6 +142,12 @@ A hand-started opencode TUI never appears: opencode is observable only with the
   `unavailable`; Claude Code needs hooks for tool calls and permission prompts.
 - **`(stale)` / `status_is_current: false`** — the last thing observed, not a
   present fact. Re-run `discover`; a restarted session is a new run.
+- **`session_followed`** in the feed — a Claude Code session ran `/clear` and
+  got a new id in the same process; the target moved to it (old id → new id in
+  the evidence). Not an exit. A resume in a new process is not followed.
+- **Where a session lives**: `discover --json` and `status --json` carry
+  `location` — `tty`, `terminal_app`, and for tmux (`muster` uses `tmux -L
+  muster`) the socket, session and pane, so it can be focused or attached.
 - **A Claude Code question asked in prose reports `idle`**, identical to a
   finished turn, unless the target has `transcript: true`. A turn ending is
   not the work finishing.

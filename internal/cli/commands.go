@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -412,6 +413,7 @@ func serveInstance(id, configPath string, cfg *config.Config, owner string, out 
 		RegistryDir: filepath.Join(stateDir, "registry"),
 		Observers:   observers,
 		Notifier:    notifier,
+		Locate:      where.Default().Resolve,
 	})
 	if err != nil {
 		return err
@@ -634,7 +636,7 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 	fmt.Fprint(w, "\n\n")
 	{
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "TARGET\tPROVIDER\tSTATUS\tATTENTION")
+		fmt.Fprintln(tw, "TARGET\tPROVIDER\tSTATUS\tATTENTION\tWHERE")
 		for _, t := range status.Targets {
 			state := t.Status
 			if state == "" {
@@ -656,7 +658,21 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 					}
 				}
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", t.ID, t.Provider, state, attention)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Provider, state, attention, whereText(t.Location))
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+
+		// The policy each target is watched under now, so a change made with
+		// watch update or watch sync can be checked rather than trusted.
+		fmt.Fprint(w, "\n")
+		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "TARGET\tALERT ON\tQUIET\tIDLE\tNO PROGRESS\tEXPECTED QUIET")
+		for _, t := range status.Targets {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, alertOnText(t.Policy.AlertOn),
+				secondsText(t.Policy.QuietAfterSeconds), secondsText(t.Policy.IdleGraceSeconds),
+				noProgressText(t.Policy.NoProgressAfterSeconds), expectedQuietText(t.Policy))
 		}
 		if err := tw.Flush(); err != nil {
 			return err
@@ -664,6 +680,38 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 		fmt.Fprintf(w, "\nInput-request visibility is reported per target; \"unavailable\" means\nbirddog cannot see requests, not that there are none.\n")
 	}
 	return nil
+}
+
+func alertOnText(conditions []string) string {
+	if len(conditions) == 0 {
+		// Said outright: a target that alerts on nothing looks watched and
+		// is not, which is exactly what this table exists to catch.
+		return "nothing"
+	}
+	return strings.Join(conditions, ",")
+}
+
+func secondsText(n int) string { return (time.Duration(n) * time.Second).String() }
+
+func noProgressText(n int) string {
+	if n == 0 {
+		return "off"
+	}
+	return secondsText(n)
+}
+
+func expectedQuietText(p daemon.PolicyView) string {
+	if p.ExpectedQuietUntil == nil {
+		return "—"
+	}
+	text := "until " + p.ExpectedQuietUntil.UTC().Format(time.RFC3339)
+	if !p.ExpectedQuietActive {
+		text += " (lapsed)"
+	}
+	if p.ExpectedQuietReason != "" {
+		text += " — " + p.ExpectedQuietReason
+	}
+	return text
 }
 
 // eventsOpts holds the events command's flags. Defined once so the set a

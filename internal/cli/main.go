@@ -117,6 +117,10 @@ Usage:
   birddog watch update --instance ID --target ID [--expect-quiet-for 20m --reason "..."]
         Adjust what an instance watches, without restarting it.
 
+  birddog watch sync   --instance ID [--file CONFIG.json] [--dry-run]
+        Watch exactly what a configuration file says: add, remove and update
+        targets to match. Unchanged targets keep their state and history.
+
   birddog stop --instance ID [--json]
         Stop an instance. Every watched session keeps running.
 

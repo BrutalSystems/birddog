@@ -142,6 +142,50 @@ is:
 
 Only the last will not change by asking again.
 
+### Policy
+
+Every target carries `policy`: what it is being watched under **now**, in the
+configuration file's own terms, so a `watch update` or `watch sync` can be
+checked rather than trusted.
+
+```json
+"policy": {
+  "alert_on": ["input_requested", "exit", "quiet", "observation_lost"],
+  "quiet_after_seconds": 300,
+  "idle_grace_seconds": 30,
+  "no_progress_after_seconds": 0,
+  "expected_quiet_until": "2026-10-16T20:00:00Z",
+  "expected_quiet_reason": "integration suite",
+  "expected_quiet_active": true
+}
+```
+
+`no_progress_after_seconds` is `0` when the condition is off, which is its
+default. `expected_quiet_active` says whether the override is suppressing
+quiet and idle at the moment of the snapshot; an override whose time has
+passed is still shown, and is not active. The text form prints the same as a
+second table, and says `nothing` for a target whose `alert_on` is empty — a
+target that looks watched and alerts on nothing is what the table is there to
+catch. The older top-level `expected_quiet_until` and `expected_quiet_reason`
+on each target are kept and mean the same.
+
+### Where a target lives
+
+`attached_session_id` is the session id the target follows now — different
+from the configured one once birddog has followed a `/clear`. `pid` is the
+process last seen answering for it, and `location` is where that process lives,
+in the same shape `discover` reports: tty, terminal app, and for a
+tmux-hosted session the server socket and pane. `location` is present only
+while the session is seen; one that has gone lives nowhere. The text form adds
+a `WHERE` column.
+
+### Its configuration file
+
+`config_sync` names the file the instance was started with, whether it
+follows it (`follow_file`), when a sync last succeeded, and `last_error` when
+the file last changed and was refused. A refused file leaves the watch list as
+it was. See `watch sync`.
+
 ## `birddog events --instance ID [--after CURSOR] [--store ID] [--wait SECONDS] [--limit N] [--json]`
 
 Observations since a cursor, oldest first. `--wait` holds the request open
@@ -409,10 +453,17 @@ Adjusts what an instance watches, without restarting it or disturbing anything
 it is already watching.
 
 ```sh
-birddog watch add    --instance ID --file target.json
+birddog watch add    --instance ID --file target.json     # one target, in the file format
 birddog watch remove --instance ID --target worker-1
 birddog watch update --instance ID --target worker-1 --expect-quiet-for 20m --reason "integration suite"
 ```
+
+`watch add` reads one target in exactly the format of an entry in a
+configuration's `targets`, with the same defaults and validation. Before 2.1 its
+`quiet_after_seconds`, `idle_grace_seconds` and `no_progress_after_seconds`
+were lost on the way to the instance, and a target with no `alert_on` alerted on
+nothing; `status` now shows each target's policy, so check one added by an
+earlier build.
 
 Every change is validated in full before any of it is applied, and advances a
 configuration revision that events are stamped with — so a delayed observation
@@ -428,6 +479,55 @@ start fresh rather than firing immediately about the silence you authorised.
 
 Removing a target stops birddog watching it. It does nothing to the session,
 and what was already observed of it is kept.
+
+## `birddog watch sync --instance ID [--file FILE] [--dry-run] [--json]`
+
+Makes an instance watch exactly what a configuration file says: targets the
+file adds are added, targets it no longer lists are removed, and targets whose
+definition changed are updated — so an orchestrator that keeps its watch list
+as a file changes the file instead of issuing `watch add` and `remove` by hand.
+
+```sh
+birddog watch sync --instance ID                       # re-read the file it was started with
+birddog watch sync --instance ID --file ledger.json    # match another file
+birddog watch sync --instance ID --dry-run             # say what would change
+```
+
+The file is a whole instance configuration, the same format `start --config`
+takes, and is validated in full first: one bad target refuses all of it and
+nothing changes. One sync is one revision.
+
+**An unchanged target is left exactly as it was** — its state, incidents and
+history are kept, and restating it does not reset a threshold. A changed
+target keeps its history too: everything birddog records is keyed by target
+id. A removed target's history is kept, as with `watch remove`. A repeat sync
+of the same file changes nothing and does not advance the revision.
+
+The result lists every target as `added`, `removed`, `updated` or `unchanged`.
+Retention is applied from the file. The instance's `name` and its
+`notification` are fixed for the life of the process; a difference in either is
+reported under `not_applied` and takes effect when the instance is resumed.
+
+Two things a file does not override:
+
+- **A runtime expected-quiet override.** One set with `watch update
+  --expect-quiet-for` survives a sync from a file that does not mention one,
+  until it lapses. A file that sets `expected_quiet_until` itself wins.
+- **A followed session.** A file still naming the id a target was followed
+  away from (see *When a session changes id*) means the session being
+  followed.
+
+`--file` does not change which file the instance was started with; `resume`
+still reads that one.
+
+### Following the file
+
+Set `"follow_file": true` at the top of the configuration and the instance
+re-reads its file whenever it changes, before the next pass, exactly as `watch
+sync` would. A save that does not parse is refused and reported in `status` as
+`config_sync.last_error`, and is not retried until the file changes again; the
+watch list stays as it was, so a half-written save never empties it. It is off
+by default.
 
 ## `birddog stop --instance ID [--json]`
 
@@ -579,7 +679,7 @@ observation.
 
 ## Idempotency
 
-Every mutation — `ack`, `watch add`, `watch remove`, `watch update` — accepts
+Every mutation — `ack`, `watch add`, `watch remove`, `watch update`, `watch sync` — accepts
 `--idempotency-key`. Repeating a request with the same key returns the original
 result instead of applying the change again, so a caller that did not hear the
 answer can retry without adding a watch twice or clearing an override twice.

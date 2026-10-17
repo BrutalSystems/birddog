@@ -3,6 +3,8 @@ package daemon
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/BrutalSystems/birddog/internal/platform/where"
 )
 
 // These types are the control channel's contract. They are shared by the
@@ -36,6 +38,10 @@ type StatusResult struct {
 	// The instance stops when that session is gone; empty means it outlives
 	// everything and waits to be stopped explicitly.
 	Owner string `json:"owner,omitempty"`
+
+	// ConfigSync is the instance's own configuration file and how the last
+	// sync from it went. Absent for an instance with no file.
+	ConfigSync *ConfigSyncView `json:"config_sync,omitempty"`
 }
 
 // TargetStatus is what is known about one watched session.
@@ -77,7 +83,44 @@ type TargetStatus struct {
 	ExpectedQuietUntil  *time.Time `json:"expected_quiet_until,omitempty"`
 	ExpectedQuietReason string     `json:"expected_quiet_reason,omitempty"`
 
+	// Policy is the policy this target is being watched under now — what a
+	// watch update or a sync actually left in force, rather than what the
+	// caller believes it sent.
+	Policy PolicyView `json:"policy"`
+
+	// AttachedSessionID is the session id this target is following now. It
+	// differs from the configured one once the session has changed id in
+	// the same process and birddog followed it.
+	AttachedSessionID string `json:"attached_session_id,omitempty"`
+
+	// PID is the process last seen answering for this target, and Location
+	// is where that process lives — its terminal and, for a tmux-hosted
+	// session, the pane — so a caller can focus or attach it. Location is
+	// reported only while the process is still seen; a session that has gone
+	// lives nowhere.
+	PID      int             `json:"pid,omitempty"`
+	Location *where.Location `json:"location,omitempty"`
+
 	Incidents []IncidentView `json:"incidents,omitempty"`
+}
+
+// PolicyView is a target's policy in the configuration file's own terms, so
+// what status reports can be compared with what was written.
+type PolicyView struct {
+	AlertOn           []string `json:"alert_on"`
+	QuietAfterSeconds int      `json:"quiet_after_seconds"`
+	IdleGraceSeconds  int      `json:"idle_grace_seconds"`
+
+	// NoProgressAfterSeconds is zero when no_progress is off, which is the
+	// default: it has no threshold until one is set.
+	NoProgressAfterSeconds int `json:"no_progress_after_seconds"`
+
+	// ExpectedQuietActive says whether an expected-quiet override is
+	// suppressing quiet and idle at the moment of the snapshot. An override
+	// whose time has passed is still shown, and is not active.
+	ExpectedQuietUntil  *time.Time `json:"expected_quiet_until,omitempty"`
+	ExpectedQuietReason string     `json:"expected_quiet_reason,omitempty"`
+	ExpectedQuietActive bool       `json:"expected_quiet_active"`
 }
 
 // IncidentView is one open attention condition.
