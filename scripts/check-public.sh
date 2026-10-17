@@ -28,11 +28,15 @@
 
 set -eu
 
+# The system grep, never a shell function or alias wrapping another grep.
+GREP=/usr/bin/grep
+[ -x "$GREP" ] || GREP=$(command -v grep)
+
 # Generic patterns: case-sensitive ERE. Placeholder home directories and
 # example.com addresses are excluded so tests and docs can still use them.
 # Token prefixes are written with a bracket so this file passes its own check.
 GENERIC='(/Users|/home)/[A-Za-z0-9._-]+/'
-GENERIC_ALLOW='(/Users|/home)/(x|me|you|user|a-user[A-Za-z0-9-]*|runner|USER|<[^>]*>)/'
+GENERIC_ALLOW='(/Users|/home)/(x|u|me|you|user|someone|a-user[A-Za-z0-9-]*|runner|USER|<[^>]*>)/'
 EMAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
 EMAIL_ALLOW='noreply|@example\.(com|org|net)|@users\.noreply\.github\.com'
 TOKENS='AKI[A][0-9A-Z]{16}|gh[p]_[A-Za-z0-9]{20,}|gh[o]_[A-Za-z0-9]{20,}|github[_]pat_[A-Za-z0-9_]{20,}|np[m]_[A-Za-z0-9]{30,}|sk[-]ant-[A-Za-z0-9_-]{10,}|xo[x][abp]-[A-Za-z0-9-]{10,}|BEGI[N] [A-Z ]*PRIVATE KEY'
@@ -46,7 +50,7 @@ trap 'rm -rf "$work"' EXIT
 : >"$work/text"
 
 if [ -r "$terms_file" ]; then
-	grep -vE '^[[:space:]]*(#|$)' "$terms_file" >"$work/terms" || true
+	"$GREP" -vE '^[[:space:]]*(#|$)' "$terms_file" >"$work/terms" || true
 else
 	echo "check-public: no private term list at $terms_file — checking generic patterns only" >&2
 	: >"$work/terms"
@@ -85,7 +89,7 @@ case ${1:-} in
 	done
 	;;
 --tree)
-	git ls-files -z | xargs -0 grep -nIH '' 2>/dev/null | collect "tree" || true
+	git ls-files -z | xargs -0 "$GREP" -nIH '' 2>/dev/null | collect "tree" || true
 	;;
 "")
 	range origin/main..HEAD
@@ -97,12 +101,32 @@ esac
 
 hits=$work/hits
 : >"$hits"
-grep -E "$GENERIC" "$work/text" | grep -vE "$GENERIC_ALLOW" >>"$hits" || true
-grep -E "$EMAIL" "$work/text" | grep -vE "$EMAIL_ALLOW" >>"$hits" || true
-grep -E "$TOKENS" "$work/text" >>"$hits" || true
+
+# match <grep args...> appends matching lines to $hits. grep exits 1 for no
+# match and 2 for an error — a pattern it cannot compile must stop the push,
+# not pass it as clean.
+match() {
+	rc=0
+	"$GREP" "$@" "$work/text" >"$work/m" || rc=$?
+	if [ "$rc" -gt 1 ]; then
+		echo "check-public: grep failed on a pattern (exit $rc) — fix the pattern; refusing" >&2
+		exit 2
+	fi
+	cat "$work/m" >>"$work/raw"
+}
+
+: >"$work/raw"
+match -E "$GENERIC"
+"$GREP" -vE "$GENERIC_ALLOW" "$work/raw" >>"$hits" || true
+: >"$work/raw"
+match -E "$EMAIL"
+"$GREP" -vE "$EMAIL_ALLOW" "$work/raw" >>"$hits" || true
+: >"$work/raw"
+match -E "$TOKENS"
 if [ -s "$work/terms" ]; then
-	grep -iE -f "$work/terms" "$work/text" >>"$hits" || true
+	match -iE -f "$work/terms"
 fi
+cat "$work/raw" >>"$hits"
 
 if [ -s "$hits" ]; then
 	echo "check-public: refusing — these lines would be published:" >&2
