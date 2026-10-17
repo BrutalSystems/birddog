@@ -2,10 +2,13 @@ package monitor
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BrutalSystems/birddog/internal/config"
+	"github.com/BrutalSystems/birddog/internal/notify"
 	"github.com/BrutalSystems/birddog/internal/policy"
 	"github.com/BrutalSystems/birddog/internal/store"
 )
@@ -225,5 +228,38 @@ func TestResolveFollowsChainsAndStops(t *testing.T) {
 	plain := config.Target{ID: "other", Attachment: config.Attachment{SessionID: "a"}}
 	if m.ResolveFollows(&plain) {
 		t.Error("followed a target with no recorded follows")
+	}
+}
+
+// failingObserver cannot read its source from the very first pass.
+type failingObserver struct{}
+
+func (failingObserver) Observe(config.Target) (Sighting, error) {
+	return Sighting{Observation: policy.Observation{
+		Status: policy.StatusUnknown, Reason: policy.ReasonSourceUnreadable,
+	}}, errors.New("registry unreadable")
+}
+
+// An alert about a target that has never been observed says so by saying
+// nothing it did not see: no state line, and no "last observation" — which a
+// stored zero once rendered as 1970-01-01.
+func TestAnAlertForATargetNeverObservedClaimsNoObservation(t *testing.T) {
+	n := &notify.Fake{Outcome: notify.Delivered}
+	m, st := newMonitorWithNotifier(t, failingObserver{}, n)
+	if err := m.Tick(t0); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if state, ok, _ := st.TargetState("worker-1"); !ok || state.Reason != policy.ReasonSourceUnreadable || !state.ObservedAt.IsZero() {
+		t.Fatalf("state = %+v, want only the reason and no observed time", state)
+	}
+	if len(n.Delivered) == 0 {
+		t.Fatal("no alert delivered for observation_lost")
+	}
+	text := n.Delivered[0].Text()
+	for _, never := range []string{"State:", "Last observation", "1970"} {
+		if strings.Contains(text, never) {
+			t.Errorf("alert claims an observation (%q):\n%s", never, text)
+		}
 	}
 }

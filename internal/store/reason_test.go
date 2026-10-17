@@ -37,7 +37,7 @@ func TestAReasonIsRecordedForATargetNeverObserved(t *testing.T) {
 		t.Fatalf("Record = applied %v, %v; want applied", applied, err)
 	}
 	st, ok, _ := s.TargetState("w")
-	if !ok || st.Reason != "source_unreadable" || st.Status != "" || !st.ObservedAt.Equal(time.UnixMilli(0).UTC()) {
+	if !ok || st.Reason != "source_unreadable" || st.Status != "" || !st.ObservedAt.IsZero() {
 		t.Errorf("state = %+v, want only the reason", st)
 	}
 
