@@ -127,10 +127,17 @@ func listMany(p Params, dirs []string) ([]Session, error) {
 
 	for _, dir := range dirs {
 		ss, err := listDir(p, dir)
-		if err != nil {
-			if errors.Is(err, iofs.ErrNotExist) {
-				continue
+		var partial *PartialError
+		switch {
+		case err == nil:
+		case errors.As(err, &partial):
+			// The directory was read; some records in it were not.
+			for path, e := range partial.Unreadable {
+				unreadable[path] = e
 			}
+		case errors.Is(err, iofs.ErrNotExist):
+			continue
+		default:
 			unreadable[dir] = err
 			continue
 		}

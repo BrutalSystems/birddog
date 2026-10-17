@@ -69,29 +69,26 @@ func ResolveSession(registryDir, sessionID string) (Recipient, error) {
 // first alert would find nobody to deliver to.
 func trackedResolver(where claude.Params, sessionID string) func() (Recipient, error) {
 	tracker := &claude.Tracker{SessionID: sessionID}
-	if sessions, err := claude.List(resolutionParams(where)); err == nil || claude.IsPartial(err) {
+	if sessions, err := claude.List(where); err == nil || claude.IsPartial(err) {
 		tracker.Find(sessions)
 	}
 	return func() (Recipient, error) { return resolveTracked(where, tracker) }
 }
 
-// resolutionParams asks for the record, not a liveness verdict: an unreachable
-// session produces a delivery failure, which is a better report than a
-// resolution failure.
-func resolutionParams(where claude.Params) claude.Params {
-	where.Probe = func(string) bool { return true }
-	where.SameProcess = func(int, string) bool { return true }
-	return where
-}
-
 // resolveTracked is ResolveSession for a session that may have changed id in
 // the same process since it was configured.
 func resolveTracked(where claude.Params, tracker *claude.Tracker) (Recipient, error) {
-	sessions, err := claude.List(resolutionParams(where))
+	sessions, err := claude.List(where)
 	if err != nil && !claude.IsPartial(err) {
 		return Recipient{}, fmt.Errorf("read Claude Code session registry: %w", err)
 	}
 
+	// Liveness is checked for real. It chooses between two records of one
+	// process, and it is what a follow to a new id requires; forcing it true
+	// let a stale copy win and a dead record be followed. Finding the
+	// configured id does not depend on it: a recipient that is there but not
+	// answering produces a delivery failure, which is a better report than
+	// a resolution failure.
 	if s, ok := tracker.Find(sessions); ok {
 		// The credential sits beside the record it belongs to, in that
 		// session's own profile.

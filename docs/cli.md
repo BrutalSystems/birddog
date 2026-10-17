@@ -45,11 +45,16 @@ identified by pid and start time together; the live record is kept, then one
 that is not a link, then the newest. A record reached through a link belongs
 to the directory it actually lives in, which is where its credential file is.
 
-A registry that exists and cannot be read makes the listing **partial**:
-what was read is used, and a session missing from it is not concluded gone —
-an owner is not counted absent, a target reports `source_unreadable` rather
-than an exit, and a `claude-inbox` delivery is retried rather than given up as
-having no recipient. A registry that does not exist simply holds no sessions.
+A registry that exists and cannot be read — or a record in one that cannot be
+read or does not parse — makes the listing **partial**. Only a record that
+vanished while the directory was being read, or a link to one that is gone, is
+skipped without saying so: neither describes a session. When a listing is
+partial, what was read is used, and a session missing from it is not
+concluded gone — an owner is not counted absent, a target reports
+`source_unreadable` rather than an exit, and a `claude-inbox` delivery is
+retried rather than given up as having no recipient. `claude-inbox` chooses
+between records with real liveness: a record at the orchestrator's process
+that does not answer is not followed to. A registry that does not exist simply holds no sessions.
 
 `--registry-dir DIR` narrows `discover` to that one directory.
 

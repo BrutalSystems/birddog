@@ -513,6 +513,12 @@ func checkOwnerExists(sessionID string) error {
 			return nil
 		}
 	}
+	if err != nil {
+		// Refused all the same — an owner that cannot be confirmed would be
+		// counted absent from the start — but the message says it may be
+		// there, in the registry that could not be read.
+		return fmt.Errorf("Claude Code session %q to own this instance was not found, and the listing was incomplete: %w", sessionID, err)
+	}
 	return fmt.Errorf("no Claude Code session %q to own this instance; `birddog discover` lists them", sessionID)
 }
 

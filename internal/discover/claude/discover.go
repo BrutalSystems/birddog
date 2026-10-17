@@ -8,6 +8,9 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -134,6 +137,14 @@ func listDir(p Params, dir string) ([]Session, error) {
 		return nil, err
 	}
 
+	// A record that could not be read is a session this listing cannot rule
+	// out. Skipping it silently made an incomplete listing look complete,
+	// and an owner whose record was unreadable was counted absent — three
+	// times, and its instance stopped. Only a record that is not there any
+	// more is skipped without saying so: the session ended between the
+	// directory being listed and the file being opened, or a link outlived
+	// the record it pointed at, and neither describes a session.
+	unreadable := map[string]error{}
 	var out []Session
 	for _, e := range entries {
 		if !recordName.MatchString(e.Name()) {
@@ -143,17 +154,28 @@ func listDir(p Params, dir string) ([]Session, error) {
 		recordDir, linked := dir, e.Type()&os.ModeSymlink != 0
 		if linked {
 			real, err := filepath.EvalSymlinks(path)
+			if errors.Is(err, iofs.ErrNotExist) {
+				continue
+			}
 			if err != nil {
-				continue // a link to nothing describes nothing
+				unreadable[path] = err
+				continue
 			}
 			recordDir = filepath.Dir(real)
 		}
 		b, err := os.ReadFile(path)
+		if errors.Is(err, iofs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
+			unreadable[path] = err
 			continue
 		}
 		var r registryRecord
 		if err := json.Unmarshal(b, &r); err != nil {
+			// Possibly caught mid-write. Either way it is a session this
+			// pass cannot see, not one that is not there.
+			unreadable[path] = fmt.Errorf("not a readable record: %w", err)
 			continue
 		}
 		out = append(out, Session{
@@ -176,6 +198,9 @@ func listDir(p Params, dir string) ([]Session, error) {
 			// that bound it, and the PID can meanwhile be reused.
 			Live: probe(r.MessagingSocketPath) && sameProcess(r.PID, r.ProcStart),
 		})
+	}
+	if len(unreadable) > 0 {
+		return out, &PartialError{Unreadable: unreadable}
 	}
 	return out, nil
 }

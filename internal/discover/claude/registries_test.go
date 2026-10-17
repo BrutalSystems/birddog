@@ -154,3 +154,48 @@ func TestAnUnreadableRegistryMakesTheListingPartial(t *testing.T) {
 		t.Error("List of only an unreadable registry = nil error")
 	}
 }
+
+// A record in a readable registry that cannot itself be read is a session the
+// listing cannot rule out, so the listing is partial. One that vanished
+// between the directory listing and the read — or a link to a record that is
+// gone — describes nothing and is skipped.
+func TestAnUnreadableRecordMakesTheListingPartial(t *testing.T) {
+	probe, same := everyoneLive()
+	for name, setup := range map[string]func(t *testing.T, dir string){
+		"bad json": func(t *testing.T, dir string) {
+			_ = os.WriteFile(filepath.Join(dir, "20.json"), []byte(`{"pid": 20, "sessionId": `), 0o600)
+		},
+		"unreadable file": func(t *testing.T, dir string) {
+			if os.Getuid() == 0 {
+				t.Skip("root reads everything")
+			}
+			path := writeSession(t, dir, 20, "owner", "P", 1)
+			_ = os.Chmod(path, 0)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSession(t, dir, 10, "other", "P", 1)
+			setup(t, dir)
+			for _, p := range []Params{
+				{RegistryDir: dir, Probe: probe, SameProcess: same},
+				{Registries: func() []string { return []string{dir} }, Probe: probe, SameProcess: same},
+			} {
+				got, err := List(p)
+				if !IsPartial(err) || len(got) != 1 {
+					t.Errorf("List = %v, %v; want the readable session and a partial error", got, err)
+				}
+			}
+		})
+	}
+
+	t.Run("dangling link", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSession(t, dir, 10, "other", "P", 1)
+		_ = os.Symlink(filepath.Join(dir, "gone.json"), filepath.Join(dir, "30.json"))
+		got, err := List(Params{RegistryDir: dir, Probe: probe, SameProcess: same})
+		if err != nil || len(got) != 1 {
+			t.Errorf("List = %v, %v; want a dangling link skipped without error", got, err)
+		}
+	})
+}
