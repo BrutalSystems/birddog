@@ -213,6 +213,9 @@ func (d *Daemon) sync(data []byte, source string, dryRun bool) (WatchSyncResult,
 
 	// Removing a target keeps its events and incidents, as watch remove
 	// does: stopping watching does not make what was observed untrue.
+	for _, id := range append(append([]string{}, result.Updated...), result.Removed...) {
+		d.monitor.Forget(id)
+	}
 	d.opts.Config.Targets = next
 	d.opts.Config.Retention = cfg.Retention
 	d.opts.Config.FollowFile = cfg.FollowFile

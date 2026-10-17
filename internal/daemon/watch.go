@@ -137,6 +137,7 @@ func (d *Daemon) watchRemove(params json.RawMessage) (any, error) {
 	// The target's events and incidents are kept: they are what was observed,
 	// and stopping watching does not make them untrue.
 	d.opts.Config.Targets = kept
+	d.monitor.Forget(p.TargetID)
 	return d.remember(p.IdempotencyKey, d.bumpRevision())
 }
 

@@ -87,6 +87,19 @@ func (s *Store) Record(e Event) (seq int64, stateApplied bool, err error) {
 		if err != nil {
 			return 0, false, err
 		}
+	} else if e.Reason != "" {
+		// An observation that asserts nothing keeps the last known status,
+		// which is history from now on. Why it is history is current, and
+		// is what reason is for: without this, status went on reporting the
+		// reason of the last good observation — usually none — through an
+		// outage. Only the target's current run; a straggler from a
+		// replaced one says nothing about it.
+		if _, err := tx.Exec(
+			`UPDATE target_state SET reason = ? WHERE target_id = ? AND generation <= ?`,
+			e.Reason, e.TargetID, e.Generation,
+		); err != nil {
+			return 0, false, fmt.Errorf("record reason: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -237,6 +237,11 @@ func (m *Monitor) Tick(now time.Time) error {
 	return nil
 }
 
+// Forget drops what was last seen of a target's process, for a target that has
+// been removed or pointed at something else: the process seen for the old
+// definition says nothing about the new one.
+func (m *Monitor) Forget(targetID string) { delete(m.processes, targetID) }
+
 func (m *Monitor) noteProcess(targetID string, s Sighting) {
 	if m.processes == nil {
 		m.processes = map[string]Process{}
@@ -568,7 +573,13 @@ func (m *Monitor) sight(target config.Target) (Sighting, error) {
 	}
 	sighting, err := observer.Observe(target)
 	if err != nil {
-		return unobserved(), err
+		// Nothing observed is asserted — but why not is kept. An adapter that
+		// says the source could not be read, or contact was lost, has said
+		// the one thing a consumer can act on, and discarding it left the
+		// feed and status reporting an outage with no reason at all.
+		u := unobserved()
+		u.Reason = sighting.Reason
+		return u, err
 	}
 	return sighting, nil
 }
