@@ -19,6 +19,13 @@ docs-pass     claude    idle         41377  Ghostty ttys002                     
 auth-thread   codex     unavailable  41880  ttys009                             01a0c46d-…    /work/auth
 ```
 
+Claude Code writes its session registry under `$CLAUDE_CONFIG_DIR/sessions`,
+so birddog reads every profile's: `~/.claude/sessions` and each
+`~/.claude-*/sessions`. A process recorded in more than one is one session,
+described by its most recently written record. A running instance, `--owner`
+and the `claude-inbox` route read the same set. `--registry-dir DIR` narrows
+`discover` to one directory.
+
 A session is listed as live only on evidence — for Claude Code, its socket
 answers *and* the process at its pid is the one the registry recorded; for
 Codex, a running process holds the thread's writer lock. Where the evidence

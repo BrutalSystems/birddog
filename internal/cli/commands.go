@@ -67,15 +67,16 @@ func runDiscover(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	registry := *registryDir
-	if registry == "" {
-		var err error
-		if registry, err = claude.DefaultRegistryDir(); err != nil {
+	params := claude.Params{RegistryDir: *registryDir}
+	if *registryDir == "" {
+		dirs, err := claude.DefaultRegistryDirs()
+		if err != nil {
 			return err
 		}
+		params.RegistryDirs = dirs
 	}
 
-	claudeSessions, err := claude.List(claude.Params{RegistryDir: registry})
+	claudeSessions, err := claude.List(params)
 	if err != nil {
 		// No registry directory means no sessions, which is an answer.
 		if !errors.Is(err, iofs.ErrNotExist) {
@@ -465,7 +466,7 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	if sessionID == "" {
 		return nil
 	}
-	registryDir, err := claude.DefaultRegistryDir()
+	registryDirs, err := claude.DefaultRegistryDirs()
 	if err != nil {
 		return nil
 	}
@@ -473,7 +474,7 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	return &daemon.Owner{
 		Description: sessionID,
 		Alive: func() bool {
-			sessions, err := claude.List(claude.Params{RegistryDir: registryDir})
+			sessions, err := claude.List(claude.Params{RegistryDirs: registryDirs})
 			if err != nil {
 				// Unreadable registry is not evidence the owner has gone.
 				// Saying it is alive keeps a transient failure from ending
@@ -501,11 +502,11 @@ func (o *ownerTrack) alive(sessions []claude.Session) bool {
 // checkOwnerExists refuses a start naming a session that is not there, rather
 // than starting an instance that reaps itself moments later.
 func checkOwnerExists(sessionID string) error {
-	registryDir, err := claude.DefaultRegistryDir()
+	registryDirs, err := claude.DefaultRegistryDirs()
 	if err != nil {
 		return err
 	}
-	sessions, err := claude.List(claude.Params{RegistryDir: registryDir})
+	sessions, err := claude.List(claude.Params{RegistryDirs: registryDirs})
 	if err != nil {
 		return fmt.Errorf("check owner session: %w", err)
 	}
@@ -541,7 +542,7 @@ func opencodePluginLog(recordsDir string) string {
 }
 
 func buildObservers() (map[string]monitor.Observer, error) {
-	registryDir, err := claude.DefaultRegistryDir()
+	registryDirs, err := claude.DefaultRegistryDirs()
 	if err != nil {
 		return nil, err
 	}
@@ -554,7 +555,7 @@ func buildObservers() (map[string]monitor.Observer, error) {
 		return nil, err
 	}
 	return observe.Build(observe.Deps{
-		ClaudeRegistryDir: registryDir,
+		ClaudeRegistryDirs: registryDirs,
 		HookStateDir:      hookStateDir(),
 		CodexLockDir:      lockDir,
 		OpencodeRecords:   opencodeRecordsDir(),

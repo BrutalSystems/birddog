@@ -9,10 +9,13 @@ import (
 // Deps is everything any adapter needs to be built. Supplied by the CLI,
 // which is the only layer that knows where things live on disk.
 type Deps struct {
-	ClaudeRegistryDir string
-	HookStateDir      string
-	CodexLockDir      string
-	OpencodeRecords   string
+	// ClaudeRegistryDirs is every profile's session registry. Claude Code
+	// writes its registry under $CLAUDE_CONFIG_DIR, so one directory sees
+	// one profile's sessions.
+	ClaudeRegistryDirs []string
+	HookStateDir       string
+	CodexLockDir       string
+	OpencodeRecords    string
 
 	// ProjectsDirs is every config profile's transcripts directory. A list,
 	// not one path: a registry directory may aggregate several profiles by

@@ -28,7 +28,7 @@ func TestRecipientIsFollowedAcrossANewSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pointed at the fixture registry rather than the real one.
-	c.Resolve = trackedResolver(dir, "s1")
+	c.Resolve = trackedResolver([]string{dir}, "s1")
 
 	if _, err := c.Resolve(); err != nil {
 		t.Fatalf("resolve before /clear: %v", err)

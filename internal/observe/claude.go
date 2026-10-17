@@ -50,11 +50,11 @@ type processIdentity struct {
 
 // NewClaude builds an observer over the real session registry and, where
 // hooks are installed, the state they record.
-func NewClaude(registryDir, hookDir string) *Claude {
+func NewClaude(registryDirs []string, hookDir string) *Claude {
 	store := &hooks.Store{Dir: hookDir}
 	return &Claude{
 		List: func() ([]claude.Session, error) {
-			return claude.List(claude.Params{RegistryDir: registryDir})
+			return claude.List(claude.Params{RegistryDirs: registryDirs})
 		},
 		HookState: func(sessionID string) (hooks.State, error) {
 			return store.Read(sessionID)
@@ -369,6 +369,6 @@ func init() {
 	register("claude", func(d Deps) (monitor.Observer, error) {
 		// Wrapped, not replaced: the registry adapter answers first on every
 		// pass, and the transcript only adds what it cannot carry.
-		return transcript.Watch(NewClaude(d.ClaudeRegistryDir, d.HookStateDir), d.ProjectsDirs), nil
+		return transcript.Watch(NewClaude(d.ClaudeRegistryDirs, d.HookStateDir), d.ProjectsDirs), nil
 	})
 }
