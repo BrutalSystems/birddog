@@ -93,3 +93,42 @@ func TestStatusTextSaysPolicyIsUnknownForAnOlderInstance(t *testing.T) {
 		t.Errorf("status text invents a policy for an older instance:\n%s", text)
 	}
 }
+
+func TestStatusTextShowsADeadline(t *testing.T) {
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := renderStatus(&out, daemon.StatusResult{
+		InstanceID: "bd-1", Name: "example",
+		Targets: []daemon.TargetStatus{{
+			ID: "worker-1", Provider: "claude", Status: "active", StatusIsCurrent: true,
+			Incidents: []daemon.IncidentView{{ID: 7, Condition: "overdue"}},
+			Policy: &daemon.PolicyView{
+				AlertOn: []string{"exit", "overdue"}, QuietAfterSeconds: 300,
+				Deadline: &at, DeadlinePassed: true,
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"DEADLINE", "2026-10-17T09:00:00Z (passed)", "overdue"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status text lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestDeadlineFlagTakesADurationOrATime(t *testing.T) {
+	now := time.Date(2026, 10, 17, 8, 0, 0, 0, time.UTC)
+	if got, err := parseDeadline("45m", now); err != nil || !got.Equal(now.Add(45*time.Minute)) {
+		t.Errorf("parseDeadline(45m) = %v, %v; want 08:45", got, err)
+	}
+	if got, err := parseDeadline("2026-10-17T10:00:00Z", now); err != nil || got.Hour() != 10 {
+		t.Errorf("parseDeadline(RFC3339) = %v, %v; want 10:00", got, err)
+	}
+	for _, bad := range []string{"-5m", "0s", "soon"} {
+		if _, err := parseDeadline(bad, now); err == nil {
+			t.Errorf("parseDeadline(%q) = nil error", bad)
+		}
+	}
+}

@@ -341,6 +341,14 @@ func Evaluate(obs Observation, p config.Policy, now time.Time) Decision {
 		now.After(laterOf(obs.LastActivityAt, from).Add(p.QuietAfter))
 	set(&d, p, config.ConditionQuiet, quiet && !quietSuppressed)
 
+	// Overdue is a wall-clock fact about the target, not an observation of
+	// it, so it needs no contact and is not floored by a wake: a deadline
+	// that passed while the machine slept has still passed. Only a verified
+	// exit answers it. An expected-quiet override does not suppress it —
+	// that override is about silence, and overdue is about time.
+	overdue := !exited && p.Deadline != nil && !now.Before(*p.Deadline)
+	set(&d, p, config.ConditionOverdue, overdue)
+
 	return d
 }
 

@@ -57,6 +57,11 @@ type WatchUpdateParams struct {
 	ExpectedQuietUntil  *string `json:"expected_quiet_until,omitempty"`
 	ExpectedQuietReason string  `json:"expected_quiet_reason,omitempty"`
 
+	// Deadline is an RFC3339 time by which the target is expected to have
+	// finished, or an empty string to clear it. Moving it resolves an open
+	// overdue incident if the new time is ahead; the next pass decides.
+	Deadline *string `json:"deadline,omitempty"`
+
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
@@ -86,6 +91,7 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 	} else {
 		p.Target.Policy = config.FillDefaults(p.Target.Policy)
 	}
+	p.Target.Policy = config.ResolveDeadline(p.Target.Policy, d.now())
 
 	d.cfgMu.Lock()
 	defer d.cfgMu.Unlock()
@@ -207,6 +213,24 @@ func applyPolicyUpdate(current config.Policy, p WatchUpdateParams) (config.Polic
 			current.ExpectedQuietUntil = &until
 			current.ExpectedQuietReason = p.ExpectedQuietReason
 		}
+	}
+	if p.Deadline != nil {
+		// Either way the deadline in force is now this update's. What the
+		// file said is kept beside it, so a sync of the same file can tell
+		// that nothing there changed.
+		current.DeadlineByUpdate = true
+		if *p.Deadline == "" {
+			current.Deadline = nil
+		} else {
+			at, err := time.Parse(time.RFC3339, *p.Deadline)
+			if err != nil {
+				return config.Policy{}, fmt.Errorf("deadline: %w", err)
+			}
+			current.Deadline = &at
+		}
+	}
+	if err := config.ValidateDeadline(current); err != nil {
+		return config.Policy{}, err
 	}
 	return current, nil
 }

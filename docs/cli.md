@@ -203,13 +203,15 @@ checked rather than trusted.
 
 ```json
 "policy": {
-  "alert_on": ["input_requested", "exit", "quiet", "observation_lost"],
+  "alert_on": ["input_requested", "exit", "quiet", "observation_lost", "overdue"],
   "quiet_after_seconds": 300,
   "idle_grace_seconds": 30,
   "no_progress_after_seconds": 0,
   "expected_quiet_until": "2026-10-16T20:00:00Z",
   "expected_quiet_reason": "integration suite",
-  "expected_quiet_active": true
+  "expected_quiet_active": true,
+  "deadline": "2026-10-16T21:30:00Z",
+  "deadline_passed": false
 }
 ```
 
@@ -224,7 +226,9 @@ quiet and idle at the moment of the snapshot; an override whose time has
 passed is still shown, and is not active. The text form prints the same as a
 second table, and says `nothing` for a target whose `alert_on` is empty — a
 target that looks watched and alerts on nothing is what the table is there to
-catch. The older top-level `expected_quiet_until` and `expected_quiet_reason`
+catch. `deadline` is absent when the target has none; a relative
+`deadline_after_seconds` is reported resolved, as the time it falls due, and
+the text form's `DEADLINE` column marks one that has gone by `(passed)`. The older top-level `expected_quiet_until` and `expected_quiet_reason`
 on each target are kept and mean the same.
 
 ### Where a target lives
@@ -446,6 +450,7 @@ was never asked to raise.
 | `quiet` | Nothing was observed to happen, and nothing else explains it |
 | `idle` | The session reported idle for longer than the grace period. Opt-in |
 | `no_progress` | The session asserts work, and nothing has happened for a long time |
+| `overdue` | The target's deadline has passed and it has not exited |
 
 **At most one incident is open per target, condition and generation**, and it
 is delivered once while it stays open; repeated passes that still see the
@@ -541,6 +546,7 @@ it is already watching.
 birddog watch add    --instance ID --file target.json     # one target, in the file format
 birddog watch remove --instance ID --target worker-1
 birddog watch update --instance ID --target worker-1 --expect-quiet-for 20m --reason "integration suite"
+birddog watch update --instance ID --target worker-1 --deadline 45m   # or --deadline 2026-10-17T09:00:00Z, --clear-deadline
 ```
 
 `watch add` reads one target in exactly the format of an entry in a
@@ -561,6 +567,23 @@ else. Exit, input requests and observation loss still surface, observation
 continues and is still recorded, and when the override lapses the thresholds
 start fresh rather than firing immediately about the silence you authorised.
 `--clear-expected-quiet` ends it early.
+
+`--deadline` sets when the target is expected to have finished: a duration
+from now (`45m`) or an RFC3339 time. If the target has not exited by then,
+`overdue` opens — one incident, delivered once, not one per pass — and stays
+open until the target exits or the deadline is moved ahead or cleared. It
+fires whatever the session is doing, busy included, which is the case `quiet`
+and `no_progress` are built not to report; an expected-quiet override does not
+suppress it. `--clear-deadline` removes it. The target's `alert_on` must
+include `overdue` (the default list does), or the deadline is refused rather
+than set to alert on nothing.
+
+In a file a deadline is `"deadline": "<RFC3339>"` or
+`"deadline_after_seconds": N`, never both. The relative form runs from when the
+instance took the target on — start, `watch add`, or the sync that added it —
+so `resume` restarts it; use the absolute form for a deadline that must not
+move. One run is one incident: a session that changes id (see *When a session
+changes id*) after its deadline starts a new generation and raises its own.
 
 Removing a target stops birddog watching it. It does nothing to the session,
 and what was already observed of it is kept.
@@ -598,6 +621,11 @@ Two things a file does not override:
 - **A runtime expected-quiet override.** One set with `watch update
   --expect-quiet-for` survives a sync from a file that does not mention one,
   until it lapses. A file that sets `expected_quiet_until` itself wins.
+- **A deadline in force.** A relative deadline keeps the time it was resolved
+  to while the file's `deadline_after_seconds` is unchanged, so re-syncing does
+  not push it back; one moved or cleared with `watch update --deadline` stays
+  that way while the file's deadline is what it was. A file that changes its
+  deadline wins.
 - **A followed session.** A file still naming the id a target was followed
   away from (see *When a session changes id*) means the session being
   followed.

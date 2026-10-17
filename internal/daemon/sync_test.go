@@ -277,7 +277,7 @@ func TestWatchAddSpecKeepsThresholdsAndDefaults(t *testing.T) {
 		t.Fatalf("watch.add: %v", err)
 	}
 	p := targets(t, opts.SocketPath)[1].Policy
-	if p.QuietAfterSeconds != 600 || p.NoProgressAfterSeconds != 3600 || p.IdleGraceSeconds != 30 || len(p.AlertOn) != 4 {
+	if p.QuietAfterSeconds != 600 || p.NoProgressAfterSeconds != 3600 || p.IdleGraceSeconds != 30 || len(p.AlertOn) != 5 {
 		t.Errorf("policy = %+v, want the file's thresholds and the default alert list", p)
 	}
 }

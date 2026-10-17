@@ -131,6 +131,13 @@ type PolicyView struct {
 	ExpectedQuietUntil  *time.Time `json:"expected_quiet_until,omitempty"`
 	ExpectedQuietReason string     `json:"expected_quiet_reason,omitempty"`
 	ExpectedQuietActive bool       `json:"expected_quiet_active"`
+
+	// Deadline is when the target is expected to have finished, absent when
+	// it has none. A relative deadline is reported resolved, as the time it
+	// falls due. DeadlinePassed says whether that time is behind the
+	// snapshot; whether an overdue incident is open is in Incidents.
+	Deadline       *time.Time `json:"deadline,omitempty"`
+	DeadlinePassed bool       `json:"deadline_passed,omitempty"`
 }
 
 // IncidentView is one open attention condition.

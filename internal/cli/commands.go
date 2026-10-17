@@ -654,19 +654,19 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 		// watch update or watch sync can be checked rather than trusted.
 		fmt.Fprint(w, "\n")
 		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "TARGET\tALERT ON\tQUIET\tIDLE\tNO PROGRESS\tEXPECTED QUIET")
+		fmt.Fprintln(tw, "TARGET\tALERT ON\tQUIET\tIDLE\tNO PROGRESS\tDEADLINE\tEXPECTED QUIET")
 		for _, t := range status.Targets {
 			if t.Policy == nil {
 				// An instance from before 2.1 does not report its policy.
 				// Saying so is the answer; printing zeroes would claim the
 				// target alerts on nothing.
-				fmt.Fprintf(tw, "%s\tunknown (instance predates 2.1)\t\t\t\t\n", t.ID)
+				fmt.Fprintf(tw, "%s\tunknown (instance predates 2.1)\t\t\t\t\t\n", t.ID)
 				continue
 			}
 			p := *t.Policy
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, alertOnText(p.AlertOn),
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, alertOnText(p.AlertOn),
 				secondsText(p.QuietAfterSeconds), secondsText(p.IdleGraceSeconds),
-				noProgressText(p.NoProgressAfterSeconds), expectedQuietText(p))
+				noProgressText(p.NoProgressAfterSeconds), deadlineText(p), expectedQuietText(p))
 		}
 		if err := tw.Flush(); err != nil {
 			return err
@@ -692,6 +692,17 @@ func noProgressText(n int) string {
 		return "off"
 	}
 	return secondsText(n)
+}
+
+func deadlineText(p daemon.PolicyView) string {
+	if p.Deadline == nil {
+		return "—"
+	}
+	text := p.Deadline.UTC().Format(time.RFC3339)
+	if p.DeadlinePassed {
+		text += " (passed)"
+	}
+	return text
 }
 
 func expectedQuietText(p daemon.PolicyView) string {

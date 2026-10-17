@@ -115,12 +115,25 @@ func runWatchUpdate(args []string, stdout io.Writer) error {
 	clearQuiet := fs.Bool("clear-expected-quiet", false, "end an expected-quiet override early")
 	quietAfter := fs.Duration("quiet-after", 0, "how long without observed activity before a quiet alert")
 	idleGrace := fs.Duration("idle-grace", 0, "how long idle must persist before an idle alert")
+	deadline := fs.String("deadline", "", "when the target should have finished: a duration from now (45m) or an RFC3339 time; past it, an unexited target raises one overdue alert")
+	clearDeadline := fs.Bool("clear-deadline", false, "remove the target's deadline")
 	asJSON := fs.Bool("json", false, "emit JSON for programmatic use")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if *target == "" {
 		return fmt.Errorf("--target is required")
+	}
+	if *deadline != "" && *clearDeadline {
+		return fmt.Errorf("--deadline and --clear-deadline are alternatives; give one")
+	}
+	var deadlineAt string
+	if *deadline != "" {
+		at, err := parseDeadline(*deadline, time.Now())
+		if err != nil {
+			return err
+		}
+		deadlineAt = at.UTC().Format(time.RFC3339)
 	}
 	socket, err := instanceSocket(*id)
 	if err != nil {
@@ -156,6 +169,14 @@ func runWatchUpdate(args []string, stdout io.Writer) error {
 		params.IdleGraceSeconds = &seconds
 	}
 
+	if *deadline != "" {
+		params.Deadline = &deadlineAt
+	}
+	if *clearDeadline {
+		empty := ""
+		params.Deadline = &empty
+	}
+
 	params.IdempotencyKey = *key
 
 	var res daemon.WatchResult
@@ -168,9 +189,33 @@ func runWatchUpdate(args []string, stdout io.Writer) error {
 			fmt.Fprintf(w, "Quiet and idle alerts are suppressed for %s.\n", *expectQuiet)
 			fmt.Fprintf(w, "Exit, input requests and observation loss still surface, and observation continues.\n")
 		}
+		if *deadline != "" {
+			fmt.Fprintf(w, "Deadline %s: if %s has not exited by then, one overdue alert is raised.\n", deadlineAt, *target)
+		}
+		if *clearDeadline {
+			fmt.Fprintf(w, "Deadline cleared; an open overdue incident resolves on the next pass.\n")
+		}
 		fmt.Fprintf(w, "Thresholds apply from now on; what was already observed is unchanged.\n")
 		return nil
 	})
+}
+
+// parseDeadline reads --deadline: a positive duration from now, or an RFC3339
+// time. A duration is turned into a time here, as --expect-quiet-for is, so
+// what the instance holds is the moment rather than an interval whose start
+// would depend on when the request arrived.
+func parseDeadline(v string, now time.Time) (time.Time, error) {
+	if d, err := time.ParseDuration(v); err == nil {
+		if d <= 0 {
+			return time.Time{}, fmt.Errorf("--deadline duration must be positive")
+		}
+		return now.Add(d), nil
+	}
+	at, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("--deadline %q is neither a duration (45m) nor an RFC3339 time", v)
+	}
+	return at, nil
 }
 
 func runWatchSync(args []string, stdout io.Writer) error {

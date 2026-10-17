@@ -41,6 +41,16 @@ const (
 	// at all. This covers that, at a horizon far above the quiet threshold so
 	// the reasoning above still holds.
 	ConditionNoProgress = "no_progress"
+
+	// ConditionOverdue: the target's deadline has passed and it has not
+	// exited. It says nothing about whether the session is stalled — a
+	// worker still busy past its estimate is exactly what it is for, and
+	// that is the case quiet and no_progress are built not to report.
+	//
+	// It opens once and stays open until the target exits or the deadline
+	// is moved or cleared, so it alerts once rather than on every pass. It
+	// is never raised for a target with no deadline, which is the default.
+	ConditionOverdue = "overdue"
 )
 
 // Default thresholds, from the handoff. Both are heuristics, not findings.
@@ -52,11 +62,17 @@ const (
 // defaultAlerts deliberately omits idle. On Claude Code a Stop event ends every
 // turn, so a session waiting on its human looks idle within the grace period
 // and would alert once per turn, per target. Idle is opt-in.
+//
+// Overdue is included because it cannot fire without a deadline, which is
+// never defaulted: setting one is the opt-in, and a deadline that alerted on
+// nothing until a second setting was also changed would be a setting the
+// operator wrote and never got.
 var defaultAlerts = []string{
 	ConditionInputRequested,
 	ConditionExit,
 	ConditionQuiet,
 	ConditionObservationLost,
+	ConditionOverdue,
 }
 
 var knownConditions = map[string]bool{
@@ -66,6 +82,7 @@ var knownConditions = map[string]bool{
 	ConditionExit:            true,
 	ConditionQuiet:           true,
 	ConditionObservationLost: true,
+	ConditionOverdue:         true,
 }
 
 // Config is one instance's watch list.
@@ -123,6 +140,10 @@ type Retention struct {
 // would be silent and in the dangerous direction, so the input is bounded
 // where it arrives rather than defended against where it is used.
 const maxRetentionSeconds = 10 * 365 * 24 * 60 * 60
+
+// maxDeadlineSeconds bounds deadline_after_seconds for the same reason: the
+// multiplication must not wrap.
+const maxDeadlineSeconds = maxRetentionSeconds
 
 // retentionWire mirrors Retention with durations as seconds, which is what the
 // file format uses.
@@ -200,6 +221,27 @@ type Policy struct {
 	// changes nothing about what is observed or recorded.
 	ExpectedQuietUntil  *time.Time `json:"expected_quiet_until,omitempty"`
 	ExpectedQuietReason string     `json:"expected_quiet_reason,omitempty"`
+
+	// Deadline is when this target is expected to have finished. Once it
+	// passes with the target not exited, overdue opens. Nil means none, and
+	// there is no default.
+	Deadline *time.Time `json:"deadline,omitempty"`
+
+	// DeadlineAfter is a deadline written relative to when the instance
+	// began watching the target, as deadline_after_seconds. It is resolved
+	// into Deadline by the instance when it takes the target on, because
+	// only the instance knows when that was; a file has no clock. Kept beside
+	// the resolved value so a re-sync of the same file does not restart it.
+	DeadlineAfter time.Duration `json:"-"`
+
+	// FileDeadline is the absolute deadline the file wrote, kept for the
+	// same reason: the one in force may since have been moved by an update.
+	FileDeadline *time.Time `json:"-"`
+
+	// DeadlineByUpdate marks a deadline set by `watch update` rather than by
+	// the file, so a sync from a file that does not mention one keeps it, as
+	// it keeps an expected-quiet override.
+	DeadlineByUpdate bool `json:"-"`
 }
 
 // AlertsOn reports whether this target should surface a condition.
@@ -221,6 +263,8 @@ type policyWire struct {
 	NoProgressAfterSecs *int     `json:"no_progress_after_seconds,omitempty"`
 	ExpectedQuietUntil  *string  `json:"expected_quiet_until,omitempty"`
 	ExpectedQuietReason string   `json:"expected_quiet_reason,omitempty"`
+	Deadline            *string  `json:"deadline,omitempty"`
+	DeadlineAfterSecs   *int     `json:"deadline_after_seconds,omitempty"`
 }
 
 type targetWire struct {
@@ -346,7 +390,19 @@ func ValidateTarget(t Target) error {
 	if t.Workspace != "" && !filepath.IsAbs(t.Workspace) {
 		return fmt.Errorf("workspace %q must be an absolute path", t.Workspace)
 	}
-	return ValidateConditions(t.Policy.AlertOn)
+	if err := ValidateConditions(t.Policy.AlertOn); err != nil {
+		return err
+	}
+	return ValidateDeadline(t.Policy)
+}
+
+// ValidateDeadline refuses a deadline that could never alert: one on a target
+// whose alert list leaves overdue out would be a setting nobody gets.
+func ValidateDeadline(p Policy) error {
+	if (p.Deadline != nil || p.DeadlineAfter > 0) && !p.AlertsOn(ConditionOverdue) {
+		return fmt.Errorf("a deadline alerts only when alert_on includes %q", ConditionOverdue)
+	}
+	return nil
 }
 
 // ValidateConditions refuses any attention condition birddog cannot raise.
@@ -443,7 +499,37 @@ func buildPolicy(pw *policyWire) (Policy, error) {
 		p.ExpectedQuietUntil = &until
 	}
 	p.ExpectedQuietReason = pw.ExpectedQuietReason
+	switch {
+	case pw.Deadline != nil && pw.DeadlineAfterSecs != nil:
+		return Policy{}, fmt.Errorf("deadline and deadline_after_seconds are alternatives; give one")
+	case pw.Deadline != nil:
+		at, err := time.Parse(time.RFC3339, *pw.Deadline)
+		if err != nil {
+			return Policy{}, fmt.Errorf("deadline: %w", err)
+		}
+		p.Deadline = &at
+		p.FileDeadline = &at
+	case pw.DeadlineAfterSecs != nil:
+		if *pw.DeadlineAfterSecs <= 0 || *pw.DeadlineAfterSecs > maxDeadlineSeconds {
+			return Policy{}, fmt.Errorf("deadline_after_seconds must be positive and at most %d", maxDeadlineSeconds)
+		}
+		p.DeadlineAfter = time.Duration(*pw.DeadlineAfterSecs) * time.Second
+	}
+	if err := ValidateDeadline(p); err != nil {
+		return Policy{}, err
+	}
 	return p, nil
+}
+
+// ResolveDeadline turns a relative deadline into an absolute one, measured from
+// now, for a target an instance is taking on. A policy with an absolute
+// deadline, or none, is returned unchanged.
+func ResolveDeadline(p Policy, now time.Time) Policy {
+	if p.DeadlineAfter > 0 && p.Deadline == nil {
+		at := now.Add(p.DeadlineAfter).UTC()
+		p.Deadline = &at
+	}
+	return p
 }
 
 // buildRetention validates a retention block, refusing one that bounds nothing.

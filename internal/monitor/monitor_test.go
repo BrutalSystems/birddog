@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -1094,5 +1095,88 @@ func TestEvidenceIsOmittedWhenThereIsNoRequest(t *testing.T) {
 	}
 	if _, present := got["evidence"]; present {
 		t.Error("evidence key present with no input request")
+	}
+}
+
+func withOverdueAt(at time.Time) func(*config.Policy) {
+	return func(p *config.Policy) {
+		p.AlertOn = append(p.AlertOn, config.ConditionOverdue)
+		p.Deadline = &at
+	}
+}
+
+func openConditions(t *testing.T, st *store.Store) []string {
+	t.Helper()
+	open, err := st.OpenIncidents("worker-1")
+	if err != nil {
+		t.Fatalf("OpenIncidents: %v", err)
+	}
+	var out []string
+	for _, inc := range open {
+		out = append(out, inc.Condition)
+	}
+	return out
+}
+
+// The deadline passing is one event, however many passes observe it.
+func TestOverdueAlertsOnceAndNotBeforeTheDeadline(t *testing.T) {
+	n := &notify.Fake{Outcome: notify.Delivered}
+	obs := &fakeObserver{sighting: sighting(policy.StatusActive, "session-a", t0)}
+	m, st := newMonitor(t, obs, withOverdueAt(t0.Add(10*time.Second)))
+	m.SetNotifier(n)
+
+	for i := range 30 {
+		now := t0.Add(time.Duration(i) * time.Second)
+		obs.sighting = sighting(policy.StatusActive, "session-a", now)
+		if err := m.Tick(now); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+		if i < 10 && len(n.Delivered) != 0 {
+			t.Fatalf("alerted at +%ds, before the deadline at +10s", i)
+		}
+	}
+
+	if len(n.Delivered) != 1 || n.Delivered[0].Condition != config.ConditionOverdue {
+		t.Fatalf("delivered %+v, want exactly one overdue alert", n.Delivered)
+	}
+	if got := openConditions(t, st); !slices.Equal(got, []string{config.ConditionOverdue}) {
+		t.Errorf("open = %v, want one overdue incident", got)
+	}
+}
+
+func TestExitResolvesOverdueAndAnExitedTargetIsNeverOverdue(t *testing.T) {
+	n := &notify.Fake{Outcome: notify.Delivered}
+	obs := &fakeObserver{sighting: sighting(policy.StatusActive, "session-a", t0)}
+	m, st := newMonitor(t, obs, withOverdueAt(t0.Add(time.Minute)))
+	m.SetNotifier(n)
+
+	_ = m.Tick(t0.Add(2 * time.Minute))
+	obs.sighting = sighting(policy.StatusExited, "session-a", t0.Add(3*time.Minute))
+	_ = m.Tick(t0.Add(3 * time.Minute))
+	_ = m.Tick(t0.Add(4 * time.Minute))
+
+	if got := openConditions(t, st); slices.Contains(got, config.ConditionOverdue) {
+		t.Errorf("open = %v, want overdue resolved once the target exited", got)
+	}
+	overdue := 0
+	for _, a := range n.Delivered {
+		if a.Condition == config.ConditionOverdue {
+			overdue++
+		}
+	}
+	if overdue != 1 {
+		t.Errorf("delivered %d overdue alerts, want 1: exiting must not raise another", overdue)
+	}
+
+	// A target that exits before its deadline is never overdue.
+	n2 := &notify.Fake{Outcome: notify.Delivered}
+	obs2 := &fakeObserver{sighting: sighting(policy.StatusExited, "session-a", t0)}
+	m2, st2 := newMonitor(t, obs2, withOverdueAt(t0.Add(time.Minute)))
+	m2.SetNotifier(n2)
+	for i := range 5 {
+		_ = m2.Tick(t0.Add(time.Duration(i) * time.Minute))
+	}
+	if got := openConditions(t, st2); slices.Contains(got, config.ConditionOverdue) {
+		t.Errorf("open = %v, want no overdue for a target that exited before its deadline", got)
 	}
 }

@@ -115,6 +115,7 @@ Usage:
   birddog watch add    --instance ID --file TARGET.json
   birddog watch remove --instance ID --target ID
   birddog watch update --instance ID --target ID [--expect-quiet-for 20m --reason "..."]
+                       [--deadline 45m|RFC3339 | --clear-deadline]
         Adjust what an instance watches, without restarting it.
 
   birddog watch sync   --instance ID [--file CONFIG.json] [--dry-run]

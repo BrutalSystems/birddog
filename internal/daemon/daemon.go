@@ -153,6 +153,20 @@ func Start(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	// A relative deadline runs from when this instance took the target on,
+	// which is now. A restart starts it again; an absolute deadline does not
+	// move.
+	//
+	// Written only when something resolves, so a configuration shared with a
+	// caller is not touched for the targets that have no relative deadline.
+	if opts.Config != nil {
+		for i, t := range opts.Config.Targets {
+			if t.Policy.DeadlineAfter > 0 && t.Policy.Deadline == nil {
+				opts.Config.Targets[i].Policy = config.ResolveDeadline(t.Policy, opts.Now())
+			}
+		}
+	}
+
 	mon := monitor.New(opts.InstanceID, opts.Config, st, opts.Observers)
 	mon.SetMachine(opts.Machine)
 
@@ -560,6 +574,8 @@ func policyView(p config.Policy, now time.Time) *PolicyView {
 		ExpectedQuietUntil:     p.ExpectedQuietUntil,
 		ExpectedQuietReason:    p.ExpectedQuietReason,
 		ExpectedQuietActive:    p.ExpectedQuietUntil != nil && now.Before(*p.ExpectedQuietUntil),
+		Deadline:               p.Deadline,
+		DeadlinePassed:         p.Deadline != nil && !now.Before(*p.Deadline),
 	}
 }
 
