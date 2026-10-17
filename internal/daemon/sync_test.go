@@ -412,3 +412,18 @@ func TestStatusCarriesWhyAnObservationFailed(t *testing.T) {
 	obs.failing.Store(false)
 	waitFor(t, "the reason to clear", func() bool { return targets(t, opts.SocketPath)[0].Reason == "" })
 }
+
+// A target whose source is unreadable from its very first pass reports why,
+// and reports no status it never observed.
+func TestStatusCarriesWhyATargetHasNeverBeenObserved(t *testing.T) {
+	obs := &flakyObserver{}
+	obs.failing.Store(true)
+	_, opts := start(t, obs)
+	waitFor(t, "the reason to reach status", func() bool {
+		return targets(t, opts.SocketPath)[0].Reason == policy.ReasonSourceUnreadable
+	})
+	ts := targets(t, opts.SocketPath)[0]
+	if ts.Status != "" || ts.StatusIsCurrent || ts.ObservedAt != nil {
+		t.Errorf("target = status %q current %v observed %v, want nothing invented", ts.Status, ts.StatusIsCurrent, ts.ObservedAt)
+	}
+}

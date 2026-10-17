@@ -102,6 +102,8 @@ func (d *Daemon) watchAdd(params json.RawMessage) (any, error) {
 		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 	}
 
+	// Nothing learned about an earlier target under this id carries over.
+	d.monitor.Forget(p.Target.ID)
 	d.opts.Config.Targets = append(d.opts.Config.Targets, p.Target)
 	return d.remember(p.IdempotencyKey, d.bumpRevision())
 }

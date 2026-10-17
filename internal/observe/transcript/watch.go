@@ -31,6 +31,14 @@ func Watch(inner monitor.Observer, projectsDirs []string) *Watcher {
 	return &Watcher{Inner: inner, ProjectsDirs: projectsDirs}
 }
 
+// Forget passes on to the inner observer, which is the one that keeps
+// anything per target.
+func (w *Watcher) Forget(targetID string) {
+	if f, ok := w.Inner.(monitor.Forgetter); ok {
+		f.Forget(targetID)
+	}
+}
+
 // Observe reports the inner observer's sighting, enriched where the target
 // asked for it and the transcript had something to say.
 //
