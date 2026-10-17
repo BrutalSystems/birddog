@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BrutalSystems/birddog/internal/discover/claude"
@@ -42,5 +45,29 @@ func TestOwnerMissingFromAPartialListingIsNotGone(t *testing.T) {
 	}
 	if o.alive(nil, false) {
 		t.Error("owner reported present when a complete listing lacks it")
+	}
+}
+
+// An owner whose registry record is reached through a link that no longer
+// resolves, for a pid that is running, may be there. Its instance must not be
+// reaped for it. Exercised through the owner check itself, with real process
+// liveness: the pid is this test's own.
+func TestAnOwnerBehindADanglingLinkIsNotReaped(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, fmt.Sprintf("%d.json", os.Getpid()))
+	if err := os.Symlink(filepath.Join(dir, "moved", "record.json"), link); err != nil {
+		t.Fatal(err)
+	}
+	owner := ownerWatchIn("owner-session", claude.Params{RegistryDir: dir})
+	for i := 0; i < 3; i++ {
+		if !owner.Alive() {
+			t.Fatalf("pass %d: owner counted absent from an incomplete listing", i+1)
+		}
+	}
+
+	// With the link gone, the owner is genuinely not there.
+	_ = os.Remove(link)
+	if owner.Alive() {
+		t.Error("owner counted present with nothing in the registry")
 	}
 }

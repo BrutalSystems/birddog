@@ -1,9 +1,11 @@
 package claudeinbox
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/BrutalSystems/birddog/internal/discover/claude"
+	"github.com/BrutalSystems/birddog/internal/notify"
 	"path/filepath"
 	"testing"
 )
@@ -125,5 +127,21 @@ func TestTheConfiguredRecipientIsFoundEvenWhenNotAnswering(t *testing.T) {
 	p := claude.Params{RegistryDir: dir, Probe: func(string) bool { return false }}
 	if got, err := trackedResolver(p, "s1")(); err != nil || got.PeerToken != "tok" {
 		t.Errorf("resolve = %+v, %v; want the configured recipient", got, err)
+	}
+}
+
+// The orchestrator's record is behind a link that no longer resolves, for a
+// pid that is running. That is a listing that cannot rule it out: delivery is
+// a failure to retry, not a recipient that does not exist.
+func TestARecipientBehindADanglingLinkIsRetried(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, fmt.Sprintf("%d.json", os.Getpid()))
+	if err := os.Symlink(filepath.Join(dir, "moved", "record.json"), link); err != nil {
+		t.Fatal(err)
+	}
+	c := &Connector{Resolve: trackedResolver(claude.Params{RegistryDir: dir}, "orchestrator")}
+	outcome, err := c.Deliver(alert())
+	if outcome != notify.Failed {
+		t.Errorf("Deliver = %v (%v), want Failed so it is retried", outcome, err)
 	}
 }

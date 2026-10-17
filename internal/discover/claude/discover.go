@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BrutalSystems/birddog/internal/platform/proc"
@@ -73,6 +75,11 @@ type Params struct {
 	// Defaults to ProbeSocket.
 	Probe func(socketPath string) bool
 
+	// PIDAlive reports whether any process holds pid, for a record that
+	// cannot be read and so carries no start time to check. Defaults to a
+	// process-table lookup.
+	PIDAlive func(pid int) bool
+
 	// SameProcess reports whether the process at pid is still the one whose
 	// start time was recorded. Defaults to proc.SameProcess.
 	SameProcess func(pid int, procStart string) bool
@@ -98,6 +105,43 @@ type registryRecord struct {
 	WaitingFor          string `json:"waitingFor"`
 	UpdatedAt           int64  `json:"updatedAt"`
 	StatusUpdatedAt     int64  `json:"statusUpdatedAt"`
+}
+
+// vanished decides whether a record that could not be opened is gone, or only
+// unreadable from here.
+//
+// "No such file" on a record says a path does not resolve now. It does not on
+// its own say the session ended: a link can outlive a renamed or unmounted
+// directory while the process it describes runs on, and treating that as
+// absence is how an owner gets counted gone and its instance stopped. So it is
+// gone only on evidence:
+//
+//   - the directory entry itself is no longer there — the session ended
+//     between the directory being listed and the record being opened, which
+//     covers a link removed after it was resolved; or
+//   - it is a link whose name gives a pid no process holds. With the record
+//     unreadable there is no start time to check, so a live pid is taken as a
+//     session that may be running: a reused pid then costs a partial listing,
+//     which is the safe direction.
+//
+// Anything else is reported, with the reason.
+func vanished(path string, linked bool, name string, pidAlive func(int) bool) (bool, error) {
+	if _, err := os.Lstat(path); errors.Is(err, iofs.ErrNotExist) {
+		return true, nil
+	}
+	if !linked {
+		// A plain file that is still listed and cannot be opened as missing
+		// is not explained by anything; report it.
+		return false, fmt.Errorf("listed but cannot be opened")
+	}
+	pid, err := strconv.Atoi(strings.TrimSuffix(name, ".json"))
+	if err != nil {
+		return false, fmt.Errorf("link to a missing record, with no pid to check")
+	}
+	if !pidAlive(pid) {
+		return true, nil
+	}
+	return false, fmt.Errorf("link to a missing record, for pid %d, which is running", pid)
 }
 
 // DefaultRegistryDir is where Claude Code 2.1.267 maintains its live session
@@ -131,6 +175,10 @@ func listDir(p Params, dir string) ([]Session, error) {
 	if sameProcess == nil {
 		sameProcess = proc.SameProcess
 	}
+	pidAlive := p.PIDAlive
+	if pidAlive == nil {
+		pidAlive = func(pid int) bool { _, err := proc.StartTime(pid); return err == nil }
+	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -152,19 +200,21 @@ func listDir(p Params, dir string) ([]Session, error) {
 		}
 		path := filepath.Join(dir, e.Name())
 		recordDir, linked := dir, e.Type()&os.ModeSymlink != 0
+		var b []byte
+		var err error
 		if linked {
-			real, err := filepath.EvalSymlinks(path)
-			if errors.Is(err, iofs.ErrNotExist) {
-				continue
+			var real string
+			if real, err = filepath.EvalSymlinks(path); err == nil {
+				recordDir = filepath.Dir(real)
+				b, err = os.ReadFile(path)
 			}
-			if err != nil {
-				unreadable[path] = err
-				continue
-			}
-			recordDir = filepath.Dir(real)
+		} else {
+			b, err = os.ReadFile(path)
 		}
-		b, err := os.ReadFile(path)
 		if errors.Is(err, iofs.ErrNotExist) {
+			if gone, why := vanished(path, linked, e.Name(), pidAlive); !gone {
+				unreadable[path] = why
+			}
 			continue
 		}
 		if err != nil {

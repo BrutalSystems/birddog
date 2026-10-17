@@ -60,6 +60,10 @@ type Options struct {
 	// Now is injectable so tests can drive time exactly.
 	Now func() time.Time
 
+	// Registries reports the Claude Code session registries read, for
+	// status. Nil reports none.
+	Registries func() []string
+
 	// Locate says where processes live, for status. Nil reports no
 	// locations, which is what tests want: the real one runs ps and tmux.
 	Locate func(pids []int) (map[int]where.Location, error)
@@ -428,6 +432,9 @@ func (d *Daemon) status() (StatusResult, error) {
 		result.Owner = d.opts.Owner.Description
 	}
 	result.ConfigSync = d.configSyncView()
+	if d.opts.Registries != nil {
+		result.ClaudeRegistries = d.opts.Registries()
+	}
 
 	d.cfgMu.Lock()
 	watched := append([]config.Target(nil), d.opts.Config.Targets...)

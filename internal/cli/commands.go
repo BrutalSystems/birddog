@@ -415,6 +415,7 @@ func serveInstance(id, configPath string, cfg *config.Config, owner string, out 
 		Observers:   observers,
 		Notifier:    notifier,
 		Locate:      where.Default().Resolve,
+		Registries:  claude.Registries,
 	})
 	if err != nil {
 		return err
@@ -466,11 +467,16 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	if sessionID == "" {
 		return nil
 	}
+	return ownerWatchIn(sessionID, claude.Params{Registries: claude.Registries})
+}
+
+// ownerWatchIn is ownerWatch over the registries where says.
+func ownerWatchIn(sessionID string, where claude.Params) *daemon.Owner {
 	owner := &ownerTrack{claude.Tracker{SessionID: sessionID}}
 	return &daemon.Owner{
 		Description: sessionID,
 		Alive: func() bool {
-			sessions, err := claude.List(claude.Params{Registries: claude.Registries})
+			sessions, err := claude.List(where)
 			if err != nil && !claude.IsPartial(err) {
 				// Unreadable registry is not evidence the owner has gone.
 				// Saying it is alive keeps a transient failure from ending

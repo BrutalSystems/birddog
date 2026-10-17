@@ -189,13 +189,43 @@ func TestAnUnreadableRecordMakesTheListingPartial(t *testing.T) {
 		})
 	}
 
-	t.Run("dangling link", func(t *testing.T) {
-		dir := t.TempDir()
-		writeSession(t, dir, 10, "other", "P", 1)
-		_ = os.Symlink(filepath.Join(dir, "gone.json"), filepath.Join(dir, "30.json"))
-		got, err := List(Params{RegistryDir: dir, Probe: probe, SameProcess: same})
-		if err != nil || len(got) != 1 {
-			t.Errorf("List = %v, %v; want a dangling link skipped without error", got, err)
-		}
-	})
+	// A link whose record is missing is skipped only when the pid in its
+	// name is not running. A link to a missing record for a running pid may
+	// be a session behind a renamed or unmounted directory, so the listing
+	// is partial.
+	for name, alive := range map[string]bool{"dangling link, pid not running": false, "dangling link, pid running": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSession(t, dir, 10, "other", "P", 1)
+			_ = os.Symlink(filepath.Join(dir, "elsewhere", "30.json"), filepath.Join(dir, "30.json"))
+			got, err := List(Params{RegistryDir: dir, Probe: probe, SameProcess: same,
+				PIDAlive: func(pid int) bool { return pid == 30 && alive }})
+			if len(got) != 1 {
+				t.Errorf("sessions = %v, want the readable one", got)
+			}
+			if IsPartial(err) != alive {
+				t.Errorf("List error = %v; want partial %v", err, alive)
+			}
+		})
+	}
+}
+
+// The race the review named: a link resolved, then its record removed before
+// the read. With the link itself still there and its pid running, that is not
+// evidence of an ended session.
+func TestVanishedNeedsEvidence(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "30.json")
+	_ = os.Symlink(filepath.Join(dir, "gone.json"), link)
+
+	if gone, _ := vanished(link, true, "30.json", func(int) bool { return true }); gone {
+		t.Error("a link that still exists, for a running pid, was taken as gone")
+	}
+	if gone, _ := vanished(link, true, "30.json", func(int) bool { return false }); !gone {
+		t.Error("a link for a pid nothing holds was not taken as gone")
+	}
+	_ = os.Remove(link)
+	if gone, _ := vanished(link, true, "30.json", func(int) bool { return true }); !gone {
+		t.Error("an entry removed during the scan was not taken as gone")
+	}
 }
