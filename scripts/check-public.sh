@@ -44,9 +44,10 @@ GREP=/usr/bin/grep
 GENERIC='(/Users|/home)/[A-Za-z0-9._-]+/'
 GENERIC_ALLOW='(/Users|/home)/(x|u|me|you|user|someone|a-user[A-Za-z0-9-]*|runner|USER|<[^>]*>)/'
 EMAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+# GitHub's noreply addresses are the public commit identity and are allowed.
 # Each allowance must match a whole address: the character after it may not
 # continue the domain, so an address at example.company is not excused.
-EMAIL_ALLOW='[A-Za-z0-9._%+-]*noreply@[A-Za-z0-9.-]+|[A-Za-z0-9._%+-]+@example\.(com|org|net)([^A-Za-z0-9.-]|$)'
+EMAIL_ALLOW='([A-Za-z0-9._%+-]*noreply@[A-Za-z0-9.-]+|[A-Za-z0-9._%+-]+@users\.noreply\.github\.com|[A-Za-z0-9._%+-]+@example\.(com|org|net))([^A-Za-z0-9.-]|$)'
 TOKENS='AKI[A][0-9A-Z]{16}|gh[p]_[A-Za-z0-9]{20,}|gh[o]_[A-Za-z0-9]{20,}|github[_]pat_[A-Za-z0-9_]{20,}|np[m]_[A-Za-z0-9]{30,}|sk[-]ant-[A-Za-z0-9_-]{10,}|xo[x][abp]-[A-Za-z0-9-]{10,}|BEGI[N] [A-Z ]*PRIVATE KEY'
 
 fail() {
@@ -198,7 +199,7 @@ match() {
 
 # Allowed placeholders are blanked one match at a time, so a placeholder on a
 # line does not excuse a real path or address beside it.
-sed -E "s#$GENERIC_ALLOW#<placeholder>/#g; s#$EMAIL_ALLOW#<placeholder>\2#g" "$text" >"$work/generic" ||
+sed -E "s#$GENERIC_ALLOW#<placeholder>/#g; s#$EMAIL_ALLOW#<placeholder>\3#g" "$text" >"$work/generic" ||
 	fail "cannot blank placeholders"
 match "$work/generic" -E "$GENERIC"
 match "$work/generic" -E "$EMAIL"
