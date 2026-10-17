@@ -37,10 +37,6 @@ type Session struct {
 	UpdatedAt       time.Time
 	StatusUpdatedAt time.Time
 
-	// Dir is the registry directory the record was read from. The
-	// credential file beside it is there, not in any other profile's.
-	Dir string
-
 	// Live reports whether the session's socket answered a connect probe.
 	// The registry record can outlive the process that wrote it, so this —
 	// not the record's existence — is the liveness test.
@@ -56,10 +52,6 @@ func (s Session) StatusIsCurrent() bool { return s.Live }
 // need no real sockets and no real processes.
 type Params struct {
 	RegistryDir string
-
-	// RegistryDirs, when set, is read instead of RegistryDir: every
-	// profile's registry at once. See DefaultRegistryDirs.
-	RegistryDirs []string
 
 	// Probe reports whether a session's socket accepts a connection.
 	// Defaults to ProbeSocket.
@@ -102,69 +94,8 @@ func DefaultRegistryDir() (string, error) {
 	return filepath.Join(home, ".claude", "sessions"), nil
 }
 
-// DefaultRegistryDirs lists every Claude Code config profile's session
-// registry under the home directory: ~/.claude/sessions and each
-// ~/.claude-<profile>/sessions.
-//
-// Claude Code writes its registry under $CLAUDE_CONFIG_DIR. Reading only
-// ~/.claude/sessions made every session of another profile invisible to a
-// running instance, to --owner and to the claude-inbox route, unless it also
-// happened to be mirrored there — so whether a session could be watched
-// depended on how it had been launched.
-func DefaultRegistryDirs() ([]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	dirs, err := filepath.Glob(filepath.Join(home, ".claude*", "sessions"))
-	if err != nil {
-		return nil, err
-	}
-	return dirs, nil
-}
-
-// List returns the sessions described by the registry directories.
-//
-// A process recorded in more than one directory is one session, and the
-// record most recently written describes it.
+// List returns the sessions described by the registry directory.
 func List(p Params) ([]Session, error) {
-	dirs := p.RegistryDirs
-	if len(dirs) == 0 {
-		return listDir(p, p.RegistryDir)
-	}
-	var out []Session
-	at := map[int]int{}
-	read := 0
-	var firstErr error
-	for _, dir := range dirs {
-		ss, err := listDir(p, dir)
-		if err != nil {
-			// One profile with no registry is ordinary; all of them
-			// unreadable is not, and is reported below.
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		read++
-		for _, s := range ss {
-			if i, ok := at[s.PID]; ok && s.PID != 0 {
-				if s.UpdatedAt.After(out[i].UpdatedAt) {
-					out[i] = s
-				}
-				continue
-			}
-			at[s.PID] = len(out)
-			out = append(out, s)
-		}
-	}
-	if read == 0 && firstErr != nil {
-		return nil, firstErr
-	}
-	return out, nil
-}
-
-func listDir(p Params, dir string) ([]Session, error) {
 	probe := p.Probe
 	if probe == nil {
 		probe = ProbeSocket
@@ -174,7 +105,7 @@ func listDir(p Params, dir string) ([]Session, error) {
 		sameProcess = proc.SameProcess
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(p.RegistryDir)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +115,7 @@ func listDir(p Params, dir string) ([]Session, error) {
 		if !recordName.MatchString(e.Name()) {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		b, err := os.ReadFile(filepath.Join(p.RegistryDir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -206,7 +137,6 @@ func listDir(p Params, dir string) ([]Session, error) {
 			SocketPath:      r.MessagingSocketPath,
 			UpdatedAt:       time.UnixMilli(r.UpdatedAt),
 			StatusUpdatedAt: time.UnixMilli(r.StatusUpdatedAt),
-			Dir:             dir,
 			// Live requires both: a socket file can outlive the process
 			// that bound it, and the PID can meanwhile be reused.
 			Live: probe(r.MessagingSocketPath) && sameProcess(r.PID, r.ProcStart),

@@ -34,7 +34,7 @@ func newConnector(settings map[string]string) (*Connector, error) {
 		return nil, fmt.Errorf("%q is required: it names the orchestrator session alerts go to", settingSessionID)
 	}
 
-	registryDirs, err := claude.DefaultRegistryDirs()
+	registryDir, err := claude.DefaultRegistryDir()
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func newConnector(settings map[string]string) (*Connector, error) {
 		// Resolved per delivery: a session that restarts gets a new pid,
 		// socket and token, and a recipient captured at startup would point
 		// at a session that no longer exists.
-		Resolve: trackedResolver(registryDirs, sessionID),
+		Resolve: trackedResolver(registryDir, sessionID),
 	}, nil
 }
 
@@ -59,19 +59,19 @@ var keyFileName = regexp.MustCompile(`^(\d+)\.[0-9a-f]+\.key$`)
 // reason to, and the token goes straight onto the wire — never into an event,
 // a log line or an alert body.
 func ResolveSession(registryDir, sessionID string) (Recipient, error) {
-	return resolveTracked([]string{registryDir}, &claude.Tracker{SessionID: sessionID})
+	return resolveTracked(registryDir, &claude.Tracker{SessionID: sessionID})
 }
 
-func trackedResolver(registryDirs []string, sessionID string) func() (Recipient, error) {
+func trackedResolver(registryDir, sessionID string) func() (Recipient, error) {
 	tracker := &claude.Tracker{SessionID: sessionID}
-	return func() (Recipient, error) { return resolveTracked(registryDirs, tracker) }
+	return func() (Recipient, error) { return resolveTracked(registryDir, tracker) }
 }
 
 // resolveTracked is ResolveSession for a session that may have changed id in
 // the same process since it was configured.
-func resolveTracked(registryDirs []string, tracker *claude.Tracker) (Recipient, error) {
+func resolveTracked(registryDir string, tracker *claude.Tracker) (Recipient, error) {
 	sessions, err := claude.List(claude.Params{
-		RegistryDirs: registryDirs,
+		RegistryDir: registryDir,
 		// Resolution needs the record, not a liveness verdict: an unreachable
 		// session produces a delivery failure, which is a better report than
 		// a resolution failure.
@@ -83,8 +83,7 @@ func resolveTracked(registryDirs []string, tracker *claude.Tracker) (Recipient, 
 	}
 
 	if s, ok := tracker.Find(sessions); ok {
-		// The credential sits beside the record it belongs to.
-		token, domain, err := readPeerToken(s.Dir, s.PID)
+		token, domain, err := readPeerToken(registryDir, s.PID)
 		if err != nil {
 			return Recipient{}, err
 		}

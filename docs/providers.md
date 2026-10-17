@@ -40,19 +40,6 @@ JSON record per running session. Reading it mutates nothing — no hooks, no
 configuration edit, no restart — which is what makes attaching to sessions that
 were *already running* possible at all.
 
-Two facts about that registry, observed on Claude Code 2.1.302 (2026-10-17):
-
-- **It lives under `$CLAUDE_CONFIG_DIR`**, at `$CLAUDE_CONFIG_DIR/sessions/`.
-  `~/.claude/sessions/` is only the default profile's; some sessions of other
-  profiles are also symlinked there, and a session launched under a profile
-  by `muster run` was not. birddog reads every `~/.claude*/sessions/`.
-- **`/clear` rewrites a session's record in place.** The file stays
-  `<pid>.json`, `pid` and `procStart` are unchanged, and `sessionId` becomes
-  a new id. Seen on a scratch session: `41046.json` went from
-  `77c79c52-…` to `31047207-…` with `procStart` `Sat Oct 17 00:16:12 2026`
-  both times. This is what lets birddog follow a target across `/clear` by
-  process identity.
-
 Each record carries the session id, working directory, process id and process
 start time, a name, the runtime status with its own timestamp, the kind of
 session and its entrypoint, the harness version, and the path of the session's
