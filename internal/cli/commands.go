@@ -469,7 +469,7 @@ func ownerWatch(sessionID string) *daemon.Owner {
 	if err != nil {
 		return nil
 	}
-	owner := &ownerTrack{sessionID: sessionID}
+	owner := &ownerTrack{claude.Tracker{SessionID: sessionID}}
 	return &daemon.Owner{
 		Description: sessionID,
 		Alive: func() bool {
@@ -490,33 +490,12 @@ func ownerWatch(sessionID string) *daemon.Owner {
 // An orchestrator that runs /clear gets a new session id in the same process.
 // Its instance was tied to the old id, and without this would reap itself
 // three passes later while the orchestrator it exists for is plainly still
-// there. The link is the process identity — pid and start time together —
-// learned from the passes that saw the owner, and nothing weaker.
-type ownerTrack struct {
-	sessionID string
-	pid       int
-	procStart string
-}
+// there.
+type ownerTrack struct{ claude.Tracker }
 
 func (o *ownerTrack) alive(sessions []claude.Session) bool {
-	for _, s := range sessions {
-		if s.SessionID == o.sessionID {
-			if s.Live && s.PID != 0 && s.ProcStart != "" {
-				o.pid, o.procStart = s.PID, s.ProcStart
-			}
-			return s.Live
-		}
-	}
-	if o.pid == 0 || o.procStart == "" {
-		return false
-	}
-	for _, s := range sessions {
-		if s.PID == o.pid && s.ProcStart == o.procStart && s.Live && s.SessionID != "" {
-			o.sessionID = s.SessionID
-			return true
-		}
-	}
-	return false
+	s, ok := o.Find(sessions)
+	return ok && s.Live
 }
 
 // checkOwnerExists refuses a start naming a session that is not there, rather
@@ -670,9 +649,17 @@ func renderStatus(w io.Writer, status daemon.StatusResult) error {
 		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "TARGET\tALERT ON\tQUIET\tIDLE\tNO PROGRESS\tEXPECTED QUIET")
 		for _, t := range status.Targets {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, alertOnText(t.Policy.AlertOn),
-				secondsText(t.Policy.QuietAfterSeconds), secondsText(t.Policy.IdleGraceSeconds),
-				noProgressText(t.Policy.NoProgressAfterSeconds), expectedQuietText(t.Policy))
+			if t.Policy == nil {
+				// An instance from before 2.1 does not report its policy.
+				// Saying so is the answer; printing zeroes would claim the
+				// target alerts on nothing.
+				fmt.Fprintf(tw, "%s\tunknown (instance predates 2.1)\t\t\t\t\n", t.ID)
+				continue
+			}
+			p := *t.Policy
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, alertOnText(p.AlertOn),
+				secondsText(p.QuietAfterSeconds), secondsText(p.IdleGraceSeconds),
+				noProgressText(p.NoProgressAfterSeconds), expectedQuietText(p))
 		}
 		if err := tw.Flush(); err != nil {
 			return err

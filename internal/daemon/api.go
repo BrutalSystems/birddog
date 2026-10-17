@@ -86,7 +86,11 @@ type TargetStatus struct {
 	// Policy is the policy this target is being watched under now — what a
 	// watch update or a sync actually left in force, rather than what the
 	// caller believes it sent.
-	Policy PolicyView `json:"policy"`
+	//
+	// A pointer so its absence means something: an instance from a build
+	// before 2.1 never sends it, and a zero value read in its place would say
+	// the target alerts on nothing — an alarm about a policy nobody reported.
+	Policy *PolicyView `json:"policy,omitempty"`
 
 	// AttachedSessionID is the session id this target is following now. It
 	// differs from the configured one once the session has changed id in

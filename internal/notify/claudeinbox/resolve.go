@@ -38,11 +38,13 @@ func newConnector(settings map[string]string) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Followed across /clear, so alerts reach the orchestrator under its new
+	// session id instead of failing against the one it was configured with.
 	return &Connector{
 		// Resolved per delivery: a session that restarts gets a new pid,
 		// socket and token, and a recipient captured at startup would point
 		// at a session that no longer exists.
-		Resolve: func() (Recipient, error) { return ResolveSession(registryDir, sessionID) },
+		Resolve: trackedResolver(registryDir, sessionID),
 	}, nil
 }
 
@@ -57,6 +59,17 @@ var keyFileName = regexp.MustCompile(`^(\d+)\.[0-9a-f]+\.key$`)
 // reason to, and the token goes straight onto the wire — never into an event,
 // a log line or an alert body.
 func ResolveSession(registryDir, sessionID string) (Recipient, error) {
+	return resolveTracked(registryDir, &claude.Tracker{SessionID: sessionID})
+}
+
+func trackedResolver(registryDir, sessionID string) func() (Recipient, error) {
+	tracker := &claude.Tracker{SessionID: sessionID}
+	return func() (Recipient, error) { return resolveTracked(registryDir, tracker) }
+}
+
+// resolveTracked is ResolveSession for a session that may have changed id in
+// the same process since it was configured.
+func resolveTracked(registryDir string, tracker *claude.Tracker) (Recipient, error) {
 	sessions, err := claude.List(claude.Params{
 		RegistryDir: registryDir,
 		// Resolution needs the record, not a liveness verdict: an unreachable
@@ -69,10 +82,7 @@ func ResolveSession(registryDir, sessionID string) (Recipient, error) {
 		return Recipient{}, fmt.Errorf("read Claude Code session registry: %w", err)
 	}
 
-	for _, s := range sessions {
-		if s.SessionID != sessionID {
-			continue
-		}
+	if s, ok := tracker.Find(sessions); ok {
 		token, domain, err := readPeerToken(registryDir, s.PID)
 		if err != nil {
 			return Recipient{}, err
@@ -84,7 +94,7 @@ func ResolveSession(registryDir, sessionID string) (Recipient, error) {
 			PIDDomain:  domain,
 		}, nil
 	}
-	return Recipient{}, fmt.Errorf("orchestrator session %q: %w", sessionID, errNoSession)
+	return Recipient{}, fmt.Errorf("orchestrator session %q: %w", tracker.SessionID, errNoSession)
 }
 
 // readPeerToken reads the credential the session will accept.

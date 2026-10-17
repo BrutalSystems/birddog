@@ -539,9 +539,9 @@ func (d *Daemon) locate(processes []monitor.Process) map[int]where.Location {
 	return out
 }
 
-func policyView(p config.Policy, now time.Time) PolicyView {
+func policyView(p config.Policy, now time.Time) *PolicyView {
 	alertOn := append([]string{}, p.AlertOn...)
-	return PolicyView{
+	return &PolicyView{
 		AlertOn:                alertOn,
 		QuietAfterSeconds:      int(p.QuietAfter / time.Second),
 		IdleGraceSeconds:       int(p.IdleGrace / time.Second),

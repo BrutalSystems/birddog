@@ -160,6 +160,11 @@ checked rather than trusted.
 }
 ```
 
+An instance started by a build before 2.1 does not report `policy`; the key is
+absent and the text form says `unknown (instance predates 2.1)` rather than
+reading zeroes as a policy. `birddog resume` it on 2.1 to see it. The same
+instances answer `watch sync` with `unknown_method`.
+
 `no_progress_after_seconds` is `0` when the condition is off, which is its
 default. `expected_quiet_active` says whether the override is suppressing
 quiet and idle at the moment of the snapshot; an override whose time has
@@ -274,8 +279,11 @@ process a follow was made in is left as configured. Following back to an id
 (A → B, then B → A) retires the older link, so it cannot cycle.
 
 `--owner` follows the owning session the same way, so an orchestrator that
-runs `/clear` keeps its instance. That link is learned from the passes that saw
-the owner, so it holds for the life of the instance process.
+runs `/clear` keeps its instance, and so does the `claude-inbox` notification
+route, so alerts keep reaching the orchestrator under its new id. Both links
+are learned from the passes that saw the session under its configured id, so
+they hold for the life of the instance process: an instance resumed after its
+owner has already run `/clear` knows only the configured id.
 
 ### Machine identity
 

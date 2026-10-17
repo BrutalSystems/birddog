@@ -21,13 +21,13 @@ func TestStatusTextShowsPolicyAndWhere(t *testing.T) {
 				Location: &where.Location{TTY: "/dev/ttys005", Tmux: &where.Tmux{
 					SocketName: "muster", Session: "muster-1", Window: "0", Pane: "%38",
 				}},
-				Policy: daemon.PolicyView{
+				Policy: &daemon.PolicyView{
 					AlertOn: []string{"exit", "quiet"}, QuietAfterSeconds: 300, IdleGraceSeconds: 30,
 					NoProgressAfterSeconds: 3600,
 					ExpectedQuietUntil:     &until, ExpectedQuietReason: "integration suite", ExpectedQuietActive: true,
 				},
 			},
-			{ID: "worker-2", Provider: "claude", Policy: daemon.PolicyView{QuietAfterSeconds: 300}},
+			{ID: "worker-2", Provider: "claude", Policy: &daemon.PolicyView{QuietAfterSeconds: 300}},
 		},
 	})
 	if err != nil {
@@ -72,5 +72,24 @@ func TestSyncTextListsEachChange(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("sync text lacks %q:\n%s", want, text)
 		}
+	}
+}
+
+// An instance from before 2.1 sends no policy. Reading zeroes in its place
+// would report a target that alerts on nothing.
+func TestStatusTextSaysPolicyIsUnknownForAnOlderInstance(t *testing.T) {
+	var out bytes.Buffer
+	if err := renderStatus(&out, daemon.StatusResult{
+		InstanceID: "bd-1", Name: "cos-masters",
+		Targets: []daemon.TargetStatus{{ID: "worker-1", Provider: "claude", Status: "idle", StatusIsCurrent: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "unknown (instance predates 2.1)") {
+		t.Errorf("status text lacks the unknown-policy line:\n%s", text)
+	}
+	if strings.Contains(text, "nothing") || strings.Contains(text, "0s") {
+		t.Errorf("status text invents a policy for an older instance:\n%s", text)
 	}
 }
