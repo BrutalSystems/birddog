@@ -556,10 +556,10 @@ func buildObservers() (map[string]monitor.Observer, error) {
 	}
 	return observe.Build(observe.Deps{
 		ClaudeRegistryDirs: registryDirs,
-		HookStateDir:      hookStateDir(),
-		CodexLockDir:      lockDir,
-		OpencodeRecords:   opencodeRecordsDir(),
-		ProjectsDirs:      transcript.DefaultProjectsDirs(home),
+		HookStateDir:       hookStateDir(),
+		CodexLockDir:       lockDir,
+		OpencodeRecords:    opencodeRecordsDir(),
+		ProjectsDirs:       transcript.DefaultProjectsDirs(home),
 	})
 }
 

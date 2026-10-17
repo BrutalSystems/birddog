@@ -27,10 +27,10 @@ func TestEveryRegisteredProviderHasAConstructor(t *testing.T) {
 func TestClaudeObserverIsWrappedForTranscriptReading(t *testing.T) {
 	obs, err := Build(Deps{
 		ClaudeRegistryDirs: []string{t.TempDir()},
-		HookStateDir:      t.TempDir(),
-		CodexLockDir:      t.TempDir(),
-		OpencodeRecords:   t.TempDir(),
-		ProjectsDirs:      []string{t.TempDir()},
+		HookStateDir:       t.TempDir(),
+		CodexLockDir:       t.TempDir(),
+		OpencodeRecords:    t.TempDir(),
+		ProjectsDirs:       []string{t.TempDir()},
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
