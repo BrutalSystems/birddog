@@ -1,6 +1,6 @@
 {
   "name": "birddog",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Teaches Claude Code to watch live coding-agent sessions with the birddog CLI: discover, start an owned instance, follow events, acknowledge alerts, stop.",
   "author": {
     "name": "BrutalSystems"
